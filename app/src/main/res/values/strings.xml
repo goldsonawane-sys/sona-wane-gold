@@ -1,0 +1,32 @@
+<resources>
+    <string name="app_name">Sona-Wane Gold</string>
+    <string name="price_summary_title">LIVE GOLD RATES</string>
+    <string name="price_summary_firestore_live">FIRESTORE LIVE</string>
+    <string name="price_summary_syncing">SYNCING</string>
+    <string name="price_summary_refresh_cd">Refresh live gold rates from Firestore</string>
+    <string name="price_summary_loading">Fetching 24K, 22K &amp; 18K gold rates from Firestore...</string>
+    <string name="price_summary_retry">Retry Sync</string>
+    <string name="calc_title">Gold Purchase Calculator</string>
+    <string name="calc_subtitle">Live Firestore rates, GST &amp; charge breakdown</string>
+    <string name="calc_refresh_cd">Refresh live Firestore gold rates</string>
+    <string name="calc_tax_breakdown">Taxes &amp; Charges Breakdown</string>
+    <string name="calc_total_payable">Total Payable Amount</string>
+    <string name="calc_proceed_payment">Proceed to Payment</string>
+    <string name="settings_title">App &amp; Security Settings</string>
+    <string name="settings_biometric_title">Biometric Authentication</string>
+    <string name="settings_biometric_app_access">Biometric App Access</string>
+    <string name="settings_biometric_tx_confirm">Biometric Transaction Confirmation</string>
+    <string name="settings_datastore_badge">LOCAL DATASTORE</string>
+    <string name="gold_history_title">Gold Price History (30D)</string>
+    <string name="gold_history_firestore_badge">FIRESTORE 30D</string>
+    <string name="portfolio_summary_title">GOLD PORTFOLIO SUMMARY</string>
+    <string name="portfolio_summary_refresh_cd">Refresh portfolio valuation from Firestore</string>
+    <string name="settings_gold_monitor_title">Gold Price Drop Monitor</string>
+    <string name="settings_gold_monitor_subtitle">Background &amp; live service that triggers push notification or in-app alert below threshold</string>
+    <string name="settings_gold_monitor_threshold_label">Alert Threshold Rate (₹/g)</string>
+    <string name="settings_gold_monitor_save">Save Threshold &amp; Start Monitor</string>
+    <string name="settings_gold_monitor_check_now">Check Rate Now</string>
+    <string name="in_app_drop_alert_badge">GOLD DROP ALERT</string>
+    <string name="in_app_drop_alert_buy_cta">Buy Gold Now</string>
+    <string name="in_app_drop_alert_dismiss">Dismiss</string>
+</resources>

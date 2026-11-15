@@ -1,0 +1,6 @@
+{
+  "name": "Sona-Wane Gold",
+  "description": "Digital gold and silver trading, investment, wallet, transfers, KYC, and admin management platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

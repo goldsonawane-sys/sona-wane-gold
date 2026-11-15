@@ -1,0 +1,456 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered customer profile, KYC summary, MPIN hash, and notification preferences.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "customUserId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "mobileNumber": { "type": "string" },
+        "countryCode": { "type": "string" },
+        "email": { "type": "string" },
+        "dob": { "type": "string" },
+        "address": { "type": "string" },
+        "state": { "type": "string" },
+        "city": { "type": "string" },
+        "pincode": { "type": "string" },
+        "panMasked": { "type": "string" },
+        "photoUri": { "type": "string" },
+        "kycStatus": { "type": "string", "enum": ["NOT_STARTED", "PENDING", "UNDER_REVIEW", "APPROVED", "REJECTED", "INFO_REQUIRED"] },
+        "accountStatus": { "type": "string", "enum": ["ACTIVE", "SUSPENDED", "BLOCKED"] },
+        "mpinHash": { "type": "string" },
+        "mpinSalt": { "type": "string" },
+        "biometricEnabled": { "type": "boolean" },
+        "referralCode": { "type": "string" },
+        "referredByCode": { "type": "string" },
+        "notifSoundEnabled": { "type": "boolean" },
+        "notifVibrationEnabled": { "type": "boolean" },
+        "notifPriceAlerts": { "type": "boolean" },
+        "notifAnnouncements": { "type": "boolean" },
+        "qrToken": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "customUserId", "fullName", "kycStatus", "accountStatus", "createdAt", "updatedAt"]
+    },
+    "DirectoryEntry": {
+      "title": "DirectoryEntry",
+      "description": "Public transfer lookup entry keyed by customUserId or mobile key without exposing PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "customUserId": { "type": "string" },
+        "mobileLast4": { "type": "string" },
+        "kycApproved": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "customUserId", "mobileLast4", "kycApproved", "updatedAt"]
+    },
+    "WalletHoldings": {
+      "title": "WalletHoldings",
+      "description": "User INR wallet balances and segregated 24K/22K/18K gold and 999 silver holdings.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "availableInr": { "type": "number" },
+        "pendingInr": { "type": "number" },
+        "lockedInr": { "type": "number" },
+        "gold24kGrams": { "type": "number" },
+        "gold22kGrams": { "type": "number" },
+        "gold18kGrams": { "type": "number" },
+        "silver999Grams": { "type": "number" },
+        "totalInvestedGoldInr": { "type": "number" },
+        "totalInvestedSilverInr": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "availableInr", "pendingInr", "lockedInr", "gold24kGrams", "gold22kGrams", "gold18kGrams", "silver999Grams", "totalInvestedGoldInr", "totalInvestedSilverInr", "updatedAt"]
+    },
+    "WalletLedgerEntry": {
+      "title": "WalletLedgerEntry",
+      "description": "Immutable financial ledger record for every wallet and bullion delta.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "entryType": { "type": "string" },
+        "assetType": { "type": "string" },
+        "deltaAmount": { "type": "number" },
+        "balanceAfter": { "type": "number" },
+        "referenceId": { "type": "string" },
+        "idempotencyKey": { "type": "string" },
+        "description": { "type": "string" },
+        "mode": { "type": "string", "enum": ["TEST", "LIVE"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "entryType", "assetType", "deltaAmount", "balanceAfter", "referenceId", "idempotencyKey", "description", "mode", "createdAt"]
+    },
+    "TransactionRecord": {
+      "title": "TransactionRecord",
+      "description": "Order, payment, withdrawal, and transfer transaction record.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "counterpartyUid": { "type": "string" },
+        "counterpartyName": { "type": "string" },
+        "txCode": { "type": "string" },
+        "category": { "type": "string", "enum": ["GOLD_BUY", "GOLD_SELL", "SILVER_BUY", "SILVER_SELL", "DEPOSIT", "WITHDRAWAL", "TRANSFER_SENT", "TRANSFER_RECEIVED", "REFUND", "REWARD"] },
+        "metalPurity": { "type": "string", "enum": ["24K", "22K", "18K", "999", "NONE"] },
+        "grams": { "type": "number" },
+        "ratePerGram": { "type": "number" },
+        "baseAmount": { "type": "number" },
+        "gstAmount": { "type": "number" },
+        "chargesAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "gatewayOrderId": { "type": "string" },
+        "gatewayRef": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "PROCESSING", "SUCCESSFUL", "FAILED", "REVERSED", "REFUNDED"] },
+        "mode": { "type": "string", "enum": ["TEST", "LIVE"] },
+        "bankAccountId": { "type": "string" },
+        "bankNameMasked": { "type": "string" },
+        "rejectionReason": { "type": "string" },
+        "idempotencyKey": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "txCode", "category", "metalPurity", "grams", "ratePerGram", "baseAmount", "gstAmount", "chargesAmount", "totalAmount", "paymentMethod", "gatewayOrderId", "gatewayRef", "status", "mode", "idempotencyKey", "createdAt", "updatedAt"]
+    },
+    "BankAccount": {
+      "title": "BankAccount",
+      "description": "User linked bank account for INR withdrawals.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "accountHolderName": { "type": "string" },
+        "bankName": { "type": "string" },
+        "accountNumberLast4": { "type": "string" },
+        "accountNumberMasked": { "type": "string" },
+        "ifscCode": { "type": "string" },
+        "verificationStatus": { "type": "string", "enum": ["PENDING", "VERIFIED", "REJECTED"] },
+        "isPrimary": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "accountHolderName", "bankName", "accountNumberLast4", "accountNumberMasked", "ifscCode", "verificationStatus", "isPrimary", "createdAt", "updatedAt"]
+    },
+    "KycRecord": {
+      "title": "KycRecord",
+      "description": "Customer KYC compliance submission and admin review status.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "mobileNumber": { "type": "string" },
+        "panNumber": { "type": "string" },
+        "aadhaarLast4": { "type": "string" },
+        "documentType": { "type": "string" },
+        "documentRefUri": { "type": "string" },
+        "documentFrontBase64": { "type": "string" },
+        "documentBackBase64": { "type": "string" },
+        "captureMethod": { "type": "string", "enum": ["CAMERAX_SCAN", "PHOTO_PICKER"] },
+        "scanQualityScore": { "type": "integer" },
+        "verificationStep": { "type": "integer" },
+        "declarationAccepted": { "type": "boolean" },
+        "addressLine": { "type": "string" },
+        "state": { "type": "string" },
+        "city": { "type": "string" },
+        "pincode": { "type": "string" },
+        "status": { "type": "string", "enum": ["NOT_STARTED", "PENDING", "UNDER_REVIEW", "APPROVED", "REJECTED", "INFO_REQUIRED"] },
+        "rejectionReason": { "type": "string" },
+        "reviewedByAdminId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userName", "mobileNumber", "panNumber", "aadhaarLast4", "documentType", "addressLine", "state", "city", "pincode", "status", "createdAt", "updatedAt"]
+    },
+    "DeviceSession": {
+      "title": "DeviceSession",
+      "description": "Active device session metadata for device management.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "deviceName": { "type": "string" },
+        "deviceModel": { "type": "string" },
+        "osVersion": { "type": "string" },
+        "sessionActive": { "type": "boolean" },
+        "lastActiveAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "deviceName", "deviceModel", "osVersion", "sessionActive", "lastActiveAt", "createdAt"]
+    },
+    "LoginHistoryEntry": {
+      "title": "LoginHistoryEntry",
+      "description": "Immutable authentication login event record.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "deviceName": { "type": "string" },
+        "status": { "type": "string" },
+        "method": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "deviceName", "status", "method", "createdAt"]
+    },
+    "PriceAlert": {
+      "title": "PriceAlert",
+      "description": "User target price alert for gold or silver with frequency and trigger history.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "metal": { "type": "string", "enum": ["GOLD_24K", "GOLD_22K", "GOLD_18K", "SILVER_999"] },
+        "targetPriceInr": { "type": "number" },
+        "direction": { "type": "string", "enum": ["ABOVE", "BELOW", "CROSSES"] },
+        "frequency": { "type": "string", "enum": ["ONCE", "EVERY_HOUR", "DAILY", "ALWAYS"] },
+        "isActive": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "triggerCount": { "type": "integer" },
+        "lastTriggeredPrice": { "type": "number" },
+        "lastObservedPrice": { "type": "number" },
+        "triggeredAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "metal", "targetPriceInr", "direction", "frequency", "isActive", "triggerCount", "createdAt", "updatedAt"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "In-app notification entry for trades, KYC, alerts, and announcements.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "isRead": { "type": "boolean" },
+        "referenceId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "title", "body", "isRead", "createdAt"]
+    },
+    "UserTransfer": {
+      "title": "UserTransfer",
+      "description": "Atomic user-to-user transfer record with recipient claim state.",
+      "type": "object",
+      "properties": {
+        "senderUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "recipientUid": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "transferCode": { "type": "string" },
+        "assetType": { "type": "string", "enum": ["INR", "GOLD_24K", "GOLD_22K", "GOLD_18K", "SILVER_999"] },
+        "quantity": { "type": "number" },
+        "feeInr": { "type": "number" },
+        "status": { "type": "string", "enum": ["COMPLETED", "FAILED", "FLAGGED"] },
+        "recipientCredited": { "type": "boolean" },
+        "idempotencyKey": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderUid", "senderName", "recipientUid", "recipientName", "transferCode", "assetType", "quantity", "feeInr", "status", "recipientCredited", "idempotencyKey", "createdAt"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Customer support ticket and threaded replies.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "ticketCode": { "type": "string" },
+        "category": { "type": "string" },
+        "subject": { "type": "string" },
+        "description": { "type": "string" },
+        "attachmentUri": { "type": "string" },
+        "status": { "type": "string", "enum": ["OPEN", "IN_PROGRESS", "WAITING_FOR_USER", "RESOLVED", "CLOSED"] },
+        "assignedAdminId": { "type": "string" },
+        "messages": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userName", "ticketCode", "category", "subject", "description", "status", "messages", "createdAt", "updatedAt"]
+    },
+    "ReferralRecord": {
+      "title": "ReferralRecord",
+      "description": "Referral attribution and reward status.",
+      "type": "object",
+      "properties": {
+        "referrerUid": { "type": "string" },
+        "referredUid": { "type": "string" },
+        "referredName": { "type": "string" },
+        "referralCode": { "type": "string" },
+        "rewardAmountInr": { "type": "number" },
+        "status": { "type": "string", "enum": ["PENDING", "ELIGIBLE", "CREDITED", "CANCELLED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["referrerUid", "referredUid", "referredName", "referralCode", "rewardAmountInr", "status", "createdAt", "updatedAt"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "RBAC admin user profile and role assignment.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "operatorId": { "type": "string" },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "FINANCE_MANAGER", "KYC_MANAGER", "CUSTOMER_SUPPORT", "READ_ONLY_AUDITOR"] },
+        "permissions": { "type": "array" },
+        "isActive": { "type": "boolean" },
+        "adminPinHash": { "type": "string" },
+        "biometricAdminEnabled": { "type": "boolean" },
+        "lastLoginAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "permissions", "isActive", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable admin audit log entry.",
+      "type": "object",
+      "properties": {
+        "adminUid": { "type": "string" },
+        "adminEmail": { "type": "string" },
+        "adminRole": { "type": "string" },
+        "action": { "type": "string" },
+        "affectedCollection": { "type": "string" },
+        "affectedRecordId": { "type": "string" },
+        "previousValue": { "type": "string" },
+        "newValue": { "type": "string" },
+        "reason": { "type": "string" },
+        "deviceInfo": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["adminUid", "adminEmail", "adminRole", "action", "affectedCollection", "affectedRecordId", "previousValue", "newValue", "reason", "deviceInfo", "createdAt"]
+    },
+    "AppConfig": {
+      "title": "AppConfig",
+      "description": "Global application settings, tax/fee rules, gateway mode, and market rate snapshots.",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string" },
+        "tagline": { "type": "string" },
+        "maintenanceMode": { "type": "boolean" },
+        "paymentMode": { "type": "string", "enum": ["TEST", "LIVE"] },
+        "paymentGatewayName": { "type": "string" },
+        "goldProviderName": { "type": "string" },
+        "gstPercent": { "type": "number" },
+        "withdrawalFeeInr": { "type": "number" },
+        "transferFeePercent": { "type": "number" },
+        "referralRewardInr": { "type": "number" },
+        "referralEnabled": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Admin system-wide broadcast announcement.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "priority": { "type": "string", "enum": ["INFO", "IMPORTANT", "URGENT"] },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "message", "priority", "createdByUid", "createdAt"]
+    },
+    "MarketPriceHistoryEntry": {
+      "title": "MarketPriceHistoryEntry",
+      "description": "Daily 30-day historical spot price snapshot for 24K/22K/18K gold and 999 silver.",
+      "type": "object",
+      "properties": {
+        "dateStr": { "type": "string" },
+        "label": { "type": "string" },
+        "gold24kPerGram": { "type": "number" },
+        "gold22kPerGram": { "type": "number" },
+        "gold18kPerGram": { "type": "number" },
+        "silver999PerGram": { "type": "number" },
+        "source": { "type": "string" },
+        "timestampEpochMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["dateStr", "label", "gold24kPerGram", "gold22kPerGram", "gold18kPerGram", "silver999PerGram", "source", "timestampEpochMs", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Customer profile and security preferences."
+    },
+    "/user_directory/{lookupKey}": {
+      "schema": { "$ref": "#/entities/DirectoryEntry" },
+      "description": "Lookup directory for peer-to-peer transfers by customUserId or mobile key."
+    },
+    "/users/{userId}/wallets/{walletId}": {
+      "schema": { "$ref": "#/entities/WalletHoldings" },
+      "description": "Customer wallet INR and segregated metal holdings."
+    },
+    "/users/{userId}/ledger/{entryId}": {
+      "schema": { "$ref": "#/entities/WalletLedgerEntry" },
+      "description": "Immutable wallet and bullion financial ledger."
+    },
+    "/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/TransactionRecord" },
+      "description": "Global transaction records for user history and admin management."
+    },
+    "/users/{userId}/bank_accounts/{bankId}": {
+      "schema": { "$ref": "#/entities/BankAccount" },
+      "description": "User linked bank accounts for payouts."
+    },
+    "/kyc_records/{userId}": {
+      "schema": { "$ref": "#/entities/KycRecord" },
+      "description": "KYC submission and admin verification workflow."
+    },
+    "/users/{userId}/devices/{deviceId}": {
+      "schema": { "$ref": "#/entities/DeviceSession" },
+      "description": "Registered user devices."
+    },
+    "/users/{userId}/login_history/{loginId}": {
+      "schema": { "$ref": "#/entities/LoginHistoryEntry" },
+      "description": "Login audit trail per user."
+    },
+    "/users/{userId}/price_alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/PriceAlert" },
+      "description": "User-configured target price alerts."
+    },
+    "/users/{userId}/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/AppNotification" },
+      "description": "In-app notification feed per user."
+    },
+    "/transfers/{transferId}": {
+      "schema": { "$ref": "#/entities/UserTransfer" },
+      "description": "User-to-user atomic transfers."
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Customer support tickets."
+    },
+    "/referrals/{referralId}": {
+      "schema": { "$ref": "#/entities/ReferralRecord" },
+      "description": "Referral attribution records."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Admin RBAC roster."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable admin action audit trail."
+    },
+    "/app_config/{configId}": {
+      "schema": { "$ref": "#/entities/AppConfig" },
+      "description": "Global platform configuration and market rate snapshots."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "System announcements broadcast by admins."
+    },
+    "/market_price_history/{dateId}": {
+      "schema": { "$ref": "#/entities/MarketPriceHistoryEntry" },
+      "description": "30-day daily bullion price history snapshots for Gold and Silver trend dashboards."
+    }
+  }
+}
