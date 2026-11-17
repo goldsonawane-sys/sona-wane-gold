@@ -7,10 +7,10 @@ import com.example.data.local.SecurityPreferences
 import com.example.data.model.FirestoreGoldSummary
 import com.example.data.model.LiveMarketRates
 import com.example.data.remote.MarketRateService
+import com.example.data.repository.FirestoreService
 import com.example.data.repository.SonaWaneRepository
 import com.example.util.BullionNotificationHelper
 import com.example.util.Formatters
-import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.first
 
 data class GoldDropEvaluationResult(
@@ -88,7 +88,7 @@ class GoldPriceMonitorService(
         }
 
         val liveRates = runCatching { marketService.fetchLiveRates() }.getOrElse { LiveMarketRates() }
-        val firestoreSummary = if (FirebaseAuth.getInstance().currentUser != null) {
+        val firestoreSummary = if (FirestoreService.currentUserOrNull(context.applicationContext) != null) {
             runCatching { SonaWaneRepository(context.applicationContext).fetchLatestGoldSummaryOnce() }.getOrNull()
         } else {
             null

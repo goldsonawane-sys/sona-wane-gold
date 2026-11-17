@@ -85,6 +85,8 @@ import com.example.data.model.UserProfile
 import com.example.ui.components.GoldOutlinedButton
 import com.example.ui.components.GoldPrimaryButton
 import com.example.ui.components.KeyValueRow
+import com.example.ui.components.KycStatusIndicatorCard
+import com.example.ui.components.KycStatusIndicatorPill
 import com.example.ui.components.LuxuryCard
 import com.example.ui.components.OrangeActionButton
 import com.example.ui.components.StatusPill
@@ -156,6 +158,7 @@ fun ProfileScreen(
     onRequestAccountDeletion: () -> Unit,
     onOpenKycFlow: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onOpenBiometricAuth: () -> Unit = {},
     onOpenAdminPortal: () -> Unit,
     onSignOut: () -> Unit,
 ) {
@@ -271,8 +274,11 @@ fun ProfileScreen(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            val kycStat = profile?.kycStatus ?: "NOT_STARTED"
-                            StatusPill(text = "KYC: $kycStat", color = statusColorFor(kycStat))
+                            KycStatusIndicatorPill(
+                                profile = profile,
+                                kycRecord = kycRecord,
+                                prefix = "KYC: ",
+                            )
                             val accStat = profile?.accountStatus ?: "ACTIVE"
                             if (accStat != "ACTIVE") {
                                 StatusPill(text = accStat, color = ErrorRed)
@@ -333,21 +339,13 @@ fun ProfileScreen(
             }
         }
 
-        // KYC Summary if rejected or info required
-        if (!kycRecord?.rejectionReason.isNullOrBlank() && profile?.kycStatus != "APPROVED") {
-            item {
-                Surface(
-                    color = ErrorRed.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.5f)),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text("KYC Action Required", style = MaterialTheme.typography.titleSmall, color = ErrorRed)
-                        Text(kycRecord?.rejectionReason.orEmpty(), style = MaterialTheme.typography.bodySmall, color = PureWhite)
-                    }
-                }
-            }
+        // Dedicated Firestore-backed KYC Status Indicator Card
+        item {
+            KycStatusIndicatorCard(
+                profile = profile,
+                kycRecord = kycRecord,
+                onActionClick = onOpenKycFlow,
+            )
         }
 
         // Security & Vault Access Card
@@ -370,6 +368,12 @@ fun ProfileScreen(
                     title = "App Settings & Biometric Authentication",
                     subtitle = "Configure Biometric App Access & Tx Confirmation (DataStore)",
                     onClick = onOpenSettings,
+                )
+                ProfileMenuRow(
+                    icon = Icons.Default.Fingerprint,
+                    title = "Biometric Security Shield",
+                    subtitle = "Authorize wallet vault, gold investments & payouts via BiometricPrompt",
+                    onClick = onOpenBiometricAuth,
                 )
                 HorizontalDivider(color = GoldBorderSubtle, modifier = Modifier.padding(vertical = 6.dp))
                 Spacer(modifier = Modifier.height(10.dp))
@@ -645,8 +649,8 @@ fun ProfileScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().testTag("bio_enable_mpin_input"),
                     )
-                    if (!bioMpinErr.isNullOrBlank()) {
-                        Text(bioMpinErr!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    bioMpinErr?.takeIf { it.isNotBlank() }?.let { errText ->
+                        Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
@@ -763,8 +767,8 @@ private fun EditProfileDialog(
                         modifier = Modifier.weight(1f),
                     )
                 }
-                if (err != null) {
-                    Text(err!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                err?.let { errText ->
+                    Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
@@ -868,7 +872,7 @@ private fun KycSubmissionDialog(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                     )
-                    if (err != null) Text(err!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    err?.let { errText -> Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall) }
                 } else {
                     KeyValueRow("Verified Name", kycRecord?.userName ?: profile?.fullName.orEmpty())
                     KeyValueRow("PAN", kycRecord?.panNumber ?: profile?.panMasked.orEmpty())

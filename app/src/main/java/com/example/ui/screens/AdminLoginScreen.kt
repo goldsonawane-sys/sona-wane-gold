@@ -74,6 +74,7 @@ import com.example.R
 import com.example.auth.onGoogleSignInClicked
 import com.example.data.model.AdminUser
 import com.example.data.repository.AdminRepository
+import com.example.data.repository.RbacCheckResult
 import com.example.ui.components.GoldOutlinedButton
 import com.example.ui.components.GoldPrimaryButton
 import com.example.ui.components.LuxuryCard
@@ -100,10 +101,12 @@ fun AdminLoginScreen(
     currentEmail: String?,
     eligibilityChecked: Boolean,
     adminUser: AdminUser?,
+    rbacState: RbacCheckResult = RbacCheckResult.Checking,
     isBusy: Boolean,
     authErrorMessage: String?,
     adminRateLimit: Pair<Int, Long>,
     onGoogleVerified: () -> Unit,
+    onRetryRbacCheck: () -> Unit = {},
     onEnrollCredentials: (operatorId: String, passcode: String, confirmPasscode: String, biometricEnabled: Boolean) -> Unit,
     onAuthenticateCredentials: (operatorId: String, passcode: String) -> Unit,
     onLaunchBiometricAdmin: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
@@ -301,9 +304,9 @@ fun AdminLoginScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = SecondarySilver,
                         )
-                        if (!googleError.isNullOrBlank()) {
+                        googleError?.takeIf { it.isNotBlank() }?.let { errMsg ->
                             Spacer(modifier = Modifier.height(12.dp))
-                            AdminAlertBox(message = googleError!!, isError = true)
+                            AdminAlertBox(message = errMsg, isError = true)
                         }
                         Spacer(modifier = Modifier.height(16.dp))
                         OrangeActionButton(
@@ -338,7 +341,7 @@ fun AdminLoginScreen(
                 }
 
                 // STATE 2: Checking Firestore admins/{uid} RBAC record
-                !eligibilityChecked -> {
+                !eligibilityChecked || rbacState is RbacCheckResult.Checking -> {
                     LuxuryCard(highlightGold = true) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -353,25 +356,81 @@ fun AdminLoginScreen(
                     }
                 }
 
-                // STATE 3: Signed-in account is NOT an active admin in Firestore RBAC
-                adminUser == null -> {
+                // STATE 2B: Firestore Permission Denied or Network Error during RBAC check (never crash)
+                rbacState is RbacCheckResult.Error -> {
                     LuxuryCard(highlightGold = true) {
-                        Text("Unauthorized Admin Identity", style = MaterialTheme.typography.headlineMedium, color = ErrorRed)
+                        Text(
+                            text = if (rbacState.isPermissionDenied) "Permission Denied" else "RBAC Verification Error",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = ErrorRed,
+                            modifier = Modifier.testTag("admin_rbac_error_title"),
+                        )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = "Signed in as: $currentEmail",
                             style = MonoSmallStyle,
                             color = LightGold,
                         )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        AdminAlertBox(message = rbacState.message, isError = true)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        OrangeActionButton(
+                            text = "Retry RBAC Check",
+                            icon = Icons.Default.Shield,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_rbac_retry_button"),
+                            onClick = onRetryRbacCheck,
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        GoldOutlinedButton(
+                            text = "Logout",
+                            icon = Icons.AutoMirrored.Filled.Logout,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_rbac_error_logout_button"),
+                            onClick = onSignOutAdmin,
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        TextButton(
+                            onClick = onReturnToCustomerFlow,
+                            modifier = Modifier
+                                .align(Alignment.CenterHorizontally)
+                                .testTag("admin_rbac_error_back_button"),
+                        ) {
+                            Text("Return to Standard Customer App", color = SecondarySilver)
+                        }
+                    }
+                }
+
+                // STATE 3: Signed-in account is NOT an active admin in Firestore RBAC -> Access Denied
+                rbacState is RbacCheckResult.AccessDenied || adminUser == null -> {
+                    val deniedReason = (rbacState as? RbacCheckResult.AccessDenied)?.reason
+                        ?: "This account does not have an active role in Firestore RBAC. Contact the Super Admin to assign a role and unique Operator ID before signing in here."
+                    val deniedEmail = (rbacState as? RbacCheckResult.AccessDenied)?.email?.takeIf { it.isNotBlank() }
+                        ?: currentEmail
+                    LuxuryCard(highlightGold = true) {
+                        Text(
+                            text = "Access Denied",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = ErrorRed,
+                            modifier = Modifier.testTag("admin_access_denied_title"),
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Signed in as: $deniedEmail",
+                            style = MonoSmallStyle,
+                            color = LightGold,
+                        )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "This account does not have an active role in Firestore RBAC. Contact the Super Admin to assign a role and unique Operator ID before signing in here.",
+                            text = deniedReason,
                             style = MaterialTheme.typography.bodyMedium,
                             color = SecondarySilver,
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         OrangeActionButton(
-                            text = "Sign Out & Switch Admin Account",
+                            text = "Logout",
                             icon = Icons.AutoMirrored.Filled.Logout,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -381,7 +440,9 @@ fun AdminLoginScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         GoldOutlinedButton(
                             text = "Return to Standard Customer App",
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_access_denied_back_button"),
                             onClick = onReturnToCustomerFlow,
                         )
                     }

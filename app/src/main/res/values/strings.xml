@@ -29,4 +29,21 @@
     <string name="in_app_drop_alert_badge">GOLD DROP ALERT</string>
     <string name="in_app_drop_alert_buy_cta">Buy Gold Now</string>
     <string name="in_app_drop_alert_dismiss">Dismiss</string>
+    <string name="profile_kyc_status_title">KYC Status</string>
+    <string name="profile_kyc_firestore_source">Synced with Firestore</string>
+    <string name="tx_history_view_title">Recent Gold &amp; Silver Trades</string>
+    <string name="tx_history_view_subtitle">Live Firestore bullion trade history</string>
+    <string name="tx_history_refresh_cd">Refresh recent gold and silver trades from Firestore</string>
+    <string name="biometric_auth_screen_title">Biometric Security Shield</string>
+    <string name="biometric_auth_prompt_title">Android BiometricPrompt Verification</string>
+    <string name="biometric_auth_emblem_cd">Biometric authentication vault emblem</string>
+    <string name="price_tracking_title">Gold &amp; Silver Price Tracker</string>
+    <string name="price_tracking_subtitle">Firestore historical trends</string>
+    <string name="price_tracking_sync_cta">Sync Firestore History</string>
+    <string name="portfolio_widget_title">PORTFOLIO SUMMARY</string>
+    <string name="portfolio_widget_total_label">Total Gold &amp; Silver Holdings Value</string>
+    <string name="portfolio_widget_refresh_cd">Refresh portfolio gold and silver valuation</string>
+    <string name="alerts_screen_title">Alerts &amp; Thresholds</string>
+    <string name="alerts_worker_section_title">WorkManager Notification Worker</string>
+    <string name="alerts_worker_section_subtitle">Configure background price threshold checks and push alerts</string>
 </resources>

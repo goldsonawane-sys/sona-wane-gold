@@ -78,12 +78,14 @@ import com.example.data.model.WalletHoldings
 import com.example.ui.components.EnvironmentModeBadge
 import com.example.ui.components.GoldOutlinedButton
 import com.example.ui.components.GoldPriceHistoryChart
+import com.example.ui.components.KycStatusIndicatorPill
 import com.example.ui.components.LuxuryCard
 import com.example.ui.components.MarketTrendsDashboard
 import com.example.ui.components.OrangeActionButton
-import com.example.ui.components.PortfolioSummaryCard
+import com.example.ui.components.PortfolioSummaryWidget
 import com.example.ui.components.PriceSummaryCard
 import com.example.ui.components.StatusPill
+import com.example.ui.components.TransactionHistoryView
 import com.example.ui.components.statusColorFor
 import com.example.ui.theme.AmberOrange
 import com.example.ui.theme.CharcoalBlack
@@ -130,6 +132,7 @@ fun HomeDashboardScreen(
     onOpenQr: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenMarket: () -> Unit,
+    onOpenPriceTracking: () -> Unit = {},
     onOpenAlerts: () -> Unit = {},
     onOpenCalculator: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
@@ -225,9 +228,9 @@ fun HomeDashboardScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 EnvironmentModeBadge(appConfig.paymentMode)
-                StatusPill(
-                    text = "KYC: ${profile?.kycStatus?.replace("_", " ") ?: "NOT STARTED"}",
-                    color = statusColorFor(profile?.kycStatus ?: "NOT_STARTED"),
+                KycStatusIndicatorPill(
+                    profile = profile,
+                    prefix = "KYC Status: ",
                 )
             }
             if (appConfig.maintenanceMode) {
@@ -273,13 +276,16 @@ fun HomeDashboardScreen(
             }
         }
 
-        // Portfolio Summary Card (Firestore live gold rates & local currency valuation)
+        // Portfolio Summary Widget (Live total value of Gold & Silver holdings on main dashboard)
         item {
-            PortfolioSummaryCard(
+            PortfolioSummaryWidget(
                 wallet = wallet,
                 firestoreGoldSummary = firestoreGoldSummary,
                 fallbackRates = rates,
+                marketHistory30d = marketHistory30d,
                 onRefresh = onRefreshFirestoreGold,
+                onBuyGold = onBuyGold,
+                onBuySilver = onBuySilver,
             )
         }
 
@@ -304,6 +310,7 @@ fun HomeDashboardScreen(
                 QuickActionChip("My / Scan QR", Icons.Default.QrCode2, LightGold, onOpenQr)
                 QuickActionChip("Price Alerts", Icons.Default.AddAlert, AmberOrange, onOpenAlerts)
                 QuickActionChip("History", Icons.Default.History, SecondarySilver, onOpenHistory)
+                QuickActionChip("Track Prices", Icons.Default.ShowChart, LightGold, onOpenPriceTracking)
                 QuickActionChip("Market", Icons.Default.ShowChart, RoyalGold, onOpenMarket)
             }
         }
@@ -383,18 +390,21 @@ fun HomeDashboardScreen(
                     isLoading = chartLoading,
                     errorMessage = marketHistoryError,
                     onSyncHistory = onSyncFirestoreHistory,
+                    externalTrendSeries = dualTrendSeries.takeIf { it.goldPoints.size >= 2 },
+                    autoFetchExternalApi = dualTrendSeries.goldPoints.size < 2,
+                    onRefreshExternalRates = onRefreshRates,
                 )
                 Text(
-                    text = "Source: Firestore market_price_history • ${rates.sourceName}",
+                    text = "Source: External Financial API (XAU/XAG + Frankfurter FX) • ${rates.sourceName}",
                     style = MaterialTheme.typography.labelSmall,
                     color = SecondarySilver,
                 )
             }
         }
 
-        // RECENT GOLD & SILVER TRADES (Firestore Live History Component)
+        // RECENT GOLD & SILVER TRADES (Firestore TransactionHistoryView Component)
         item {
-            RecentBullionTradesSection(
+            TransactionHistoryView(
                 transactions = transactions,
                 onSelectTransaction = onViewReceipt,
                 onViewAllHistory = onOpenHistory,

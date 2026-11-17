@@ -167,6 +167,8 @@ fun SplashScreen(onFinished: () -> Unit) {
 fun WelcomeAndAuthScreen(
     onAuthSuccess: () -> Unit,
     onOpenAdminLogin: () -> Unit = {},
+    hasSavedBiometricVault: Boolean = false,
+    onBiometricQuickLogin: ((onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -359,7 +361,7 @@ fun WelcomeAndAuthScreen(
                 )
                 Spacer(modifier = Modifier.height(18.dp))
 
-                if (!errorMessage.isNullOrBlank()) {
+                errorMessage?.takeIf { it.isNotBlank() }?.let { errText ->
                     Surface(
                         color = ErrorRed.copy(alpha = 0.14f),
                         border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.5f)),
@@ -367,13 +369,39 @@ fun WelcomeAndAuthScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            text = errorMessage!!,
+                            text = errText,
                             style = MaterialTheme.typography.bodySmall,
                             color = ErrorRed,
                             modifier = Modifier.padding(12.dp),
                         )
                     }
                     Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                if (hasSavedBiometricVault && biometricCapability.isUsable && onBiometricQuickLogin != null) {
+                    GoldPrimaryButton(
+                        text = "Biometric Quick Login (Fingerprint / Face)",
+                        enabled = !isLoading,
+                        icon = Icons.Default.Fingerprint,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("biometric_quick_login_button"),
+                        onClick = {
+                            errorMessage = null
+                            isLoading = true
+                            onBiometricQuickLogin(
+                                {
+                                    isLoading = false
+                                    onAuthSuccess()
+                                },
+                                { msg ->
+                                    isLoading = false
+                                    errorMessage = msg
+                                },
+                            )
+                        },
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
                 }
 
                 GoldPrimaryButton(
@@ -433,6 +461,7 @@ fun MpinLockScreen(
     subtitle: String,
     isSetupMode: Boolean,
     showBiometricButton: Boolean = false,
+    biometricErrorMessage: String? = null,
     mpinRateLimit: Pair<Int, Long> = 0 to 0L,
     otpState: SecurityOtpState = SecurityOtpState(),
     onBiometricClick: () -> Unit = {},
@@ -541,6 +570,15 @@ fun MpinLockScreen(
                 )
             }
 
+            if (showBiometricButton && !isSetupMode) {
+                Spacer(modifier = Modifier.height(10.dp))
+                StatusPill(
+                    text = "BIOMETRIC FAST-LOGIN READY",
+                    color = SuccessGreen,
+                    icon = Icons.Default.Fingerprint,
+                )
+            }
+
             Spacer(modifier = Modifier.height(22.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -556,9 +594,16 @@ fun MpinLockScreen(
                 }
             }
 
-            if (!errorMsg.isNullOrBlank()) {
+            val visibleError = errorMsg?.takeIf { it.isNotBlank() } ?: biometricErrorMessage?.takeIf { it.isNotBlank() }
+            if (!visibleError.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(14.dp))
-                Text(errorMsg!!, style = MaterialTheme.typography.bodySmall, color = ErrorRed, textAlign = TextAlign.Center)
+                Text(
+                    text = visibleError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ErrorRed,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.testTag("mpin_lock_error_text"),
+                )
             }
 
             Spacer(modifier = Modifier.height(26.dp))
@@ -735,8 +780,8 @@ fun MpinLockScreen(
                             )
                         }
                     }
-                    if (!otpState.errorMessage.isNullOrBlank()) {
-                        Text(otpState.errorMessage!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    otpState.errorMessage?.takeIf { it.isNotBlank() }?.let { otpErr ->
+                        Text(otpErr, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
@@ -789,3 +834,150 @@ private fun PinPadKey(
         }
     }
 }
+
+@Composable
+fun BiometricAppLockScreen(
+    userDisplayName: String,
+    userEmail: String,
+    errorMessage: String?,
+    onUnlockWithBiometric: () -> Unit,
+    onUnlockWithDeviceCredential: (() -> Unit)? = null,
+    onSetupMpinBackup: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    val context = LocalContext.current
+    val capability = remember(context) { BiometricAuthManager.checkCapability(context) }
+    val hasDeviceCred = remember(context) { BiometricAuthManager.hasDeviceCredentialFallback(context) }
+
+    LaunchedEffect(Unit) {
+        delay(200L)
+        if (capability.isUsable) {
+            onUnlockWithBiometric()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DeepBlack)
+            .safeDrawingPadding()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 420.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = RoyalGold.copy(alpha = 0.16f),
+                border = BorderStroke(1.5.dp, RoyalGold),
+                modifier = Modifier.size(76.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Fingerprint,
+                        contentDescription = "Biometric App Lock",
+                        tint = RoyalGold,
+                        modifier = Modifier.size(40.dp),
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Unlock SONA-WANE GOLD",
+                style = MaterialTheme.typography.headlineLarge,
+                color = PureWhite,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            if (userDisplayName.isNotBlank() || userEmail.isNotBlank()) {
+                Text(
+                    text = userDisplayName.ifBlank { userEmail },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LightGold,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            StatusPill(
+                text = capability.label,
+                color = if (capability.isUsable) SuccessGreen else AmberOrange,
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            LuxuryCard(highlightGold = true) {
+                Text(
+                    text = "Biometric App Access Enabled",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = LightGold,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Authenticate with Fingerprint or Face Unlock via Android BiometricPrompt to access your gold & silver vault.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SecondarySilver,
+                )
+
+                if (!errorMessage.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        color = ErrorRed.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, ErrorRed),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ErrorRed,
+                            modifier = Modifier
+                                .padding(10.dp)
+                                .testTag("biometric_lock_error_text"),
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                GoldPrimaryButton(
+                    text = "Unlock with Fingerprint / Face",
+                    onClick = onUnlockWithBiometric,
+                    enabled = capability.isUsable,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("biometric_app_unlock_btn"),
+                )
+
+                if (hasDeviceCred && onUnlockWithDeviceCredential != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    GoldOutlinedButton(
+                        text = "Use Device PIN / Pattern",
+                        onClick = onUnlockWithDeviceCredential,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("biometric_device_cred_btn"),
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    TextButton(onClick = onSetupMpinBackup) {
+                        Text("Set Up 4-Digit MPIN", color = LightGold)
+                    }
+                    TextButton(onClick = onSignOut) {
+                        Text("Sign Out", color = SecondarySilver)
+                    }
+                }
+            }
+        }
+    }
+}
+

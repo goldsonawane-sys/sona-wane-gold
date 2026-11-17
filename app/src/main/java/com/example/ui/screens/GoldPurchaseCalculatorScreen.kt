@@ -674,34 +674,36 @@ fun GoldPurchaseCalculatorScreen(
                     }
 
                     if (biometricEnforced || hardwareReady) {
-                        GoldPrimaryButton(
-                            text = "Authorize with Fingerprint / Face",
-                            icon = Icons.Default.Fingerprint,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("calc_biometric_confirm_btn"),
-                            onClick = {
-                                authError = null
-                                onVerifyBiometric!!.invoke(
-                                    {
-                                        showPaymentConfirmDialog = false
-                                        mpinInput = ""
-                                        onBiometricTradeAuthorized("CALC_BUY_GOLD_${selectedPurity}_BIOMETRIC")
-                                        onTriggerPayment(
-                                            selectedPurity,
-                                            quote.grams,
-                                            quote.ratePerGram,
-                                            quote.baseAmountInr,
-                                            quote.gstAmountInr,
-                                            quote.chargesAmountInr,
-                                            quote.totalPayableInr,
-                                            paymentMethod,
-                                        )
-                                    },
-                                    { err -> authError = err },
-                                )
-                            },
-                        )
+                        onVerifyBiometric?.let { verifyBio ->
+                            GoldPrimaryButton(
+                                text = "Authorize with Fingerprint / Face",
+                                icon = Icons.Default.Fingerprint,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("calc_biometric_confirm_btn"),
+                                onClick = {
+                                    authError = null
+                                    verifyBio.invoke(
+                                        {
+                                            showPaymentConfirmDialog = false
+                                            mpinInput = ""
+                                            onBiometricTradeAuthorized("CALC_BUY_GOLD_${selectedPurity}_BIOMETRIC")
+                                            onTriggerPayment(
+                                                selectedPurity,
+                                                quote.grams,
+                                                quote.ratePerGram,
+                                                quote.baseAmountInr,
+                                                quote.gstAmountInr,
+                                                quote.chargesAmountInr,
+                                                quote.totalPayableInr,
+                                                paymentMethod,
+                                            )
+                                        },
+                                        { err -> authError = err },
+                                    )
+                                },
+                            )
+                        }
                         if (biometricEnforced && !profile?.mpinHash.isNullOrBlank()) {
                             OutlinedTextField(
                                 value = mpinInput,
@@ -716,8 +718,8 @@ fun GoldPurchaseCalculatorScreen(
                         }
                     }
 
-                    if (!authError.isNullOrBlank()) {
-                        Text(authError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    authError?.takeIf { it.isNotBlank() }?.let { errText ->
+                        Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },

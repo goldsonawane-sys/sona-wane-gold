@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
@@ -71,6 +72,8 @@ import com.example.data.model.UserProfile
 import com.example.data.model.WalletHoldings
 import com.example.data.model.WalletLedgerEntry
 import com.example.util.BiometricAuthManager
+import com.example.util.BiometricLoginManager
+import com.example.util.BullionQrModule
 import com.example.ui.components.EnvironmentModeBadge
 import com.example.ui.components.GoldOutlinedButton
 import com.example.ui.components.GoldPrimaryButton
@@ -108,7 +111,10 @@ fun WalletScreen(
     initialDialog: String? = null, // "ADD" or "WITHDRAW"
     walletUnlocked: Boolean = true,
     walletBiometricLock: Boolean = true,
+    biometricAppAccess: Boolean = false,
+    biometricCapabilityOverride: com.example.util.BiometricCapability? = null,
     onUnlockWalletWithBiometric: ((onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit)? = null,
+    onUnlockWalletWithDeviceCredential: ((onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit)? = null,
     onUnlockWalletWithMpin: () -> Unit = {},
     onLockWallet: () -> Unit = {},
     onToggleWalletBiometricLock: (Boolean) -> Unit = {},
@@ -120,11 +126,14 @@ fun WalletScreen(
     onSetupMpin: () -> Unit,
     onOpenBankAccounts: () -> Unit,
     onOpenTransfer: () -> Unit,
+    onOpenReceiveQr: () -> Unit = {},
     onOpenFullHistory: () -> Unit,
     onViewReceipt: (TransactionRecord) -> Unit,
 ) {
     val context = LocalContext.current
-    val biometricCapability = remember { BiometricAuthManager.checkCapability(context) }
+    val biometricCapability = biometricCapabilityOverride
+        ?: remember { BiometricLoginManager.checkBiometricCapability(context) }
+    val hasDeviceCredential = remember { BiometricAuthManager.hasDeviceCredentialFallback(context) }
     val w = wallet ?: WalletHoldings()
     val totalWalletInr = w.availableInr + w.pendingInr + w.lockedInr
     val goldVal = (w.gold24kGrams * rates.gold24kSellPerGram) +
@@ -136,108 +145,52 @@ fun WalletScreen(
     var activeTab by remember { mutableIntStateOf(0) }
     var showAddDialog by remember(initialDialog) { mutableStateOf(initialDialog == "ADD") }
     var showWithdrawDialog by remember(initialDialog) { mutableStateOf(initialDialog == "WITHDRAW") }
-    var walletGatePin by remember { mutableStateOf("") }
     var walletGateErr by remember { mutableStateOf<String?>(null) }
 
-    val gateRequired = profile?.biometricEnabled == true && walletBiometricLock && !walletUnlocked
+    val gateRequired = (profile?.biometricEnabled == true || biometricAppAccess) && walletBiometricLock && !walletUnlocked
     if (gateRequired) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(DeepBlack)
-                .padding(24.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            LuxuryCard(
-                highlightGold = true,
-                modifier = Modifier.testTag("wallet_biometric_gate_card"),
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = RoyalGold.copy(alpha = 0.16f),
-                        border = BorderStroke(1.5.dp, RoyalGold),
-                        modifier = Modifier.size(72.dp),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Fingerprint,
-                                contentDescription = "Biometric Wallet Lock",
-                                tint = RoyalGold,
-                                modifier = Modifier.size(38.dp),
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Text(
-                        text = "Wallet Vault Protected",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = LightGold,
+        BiometricAuthenticationScreen(
+            scope = SensitiveActionScope.WALLET_VAULT,
+            actionSummary = "INR Wallet & Bullion Holdings Vault",
+            userDisplayName = profile?.fullName.orEmpty(),
+            biometricCapability = biometricCapability,
+            hasDeviceCredentialFallback = hasDeviceCredential && onUnlockWalletWithDeviceCredential != null,
+            hasMpinFallback = !profile?.mpinHash.isNullOrBlank(),
+            walletLockEnabled = walletBiometricLock,
+            isWalletAuthorized = false,
+            errorMessage = walletGateErr,
+            showTopBar = false,
+            allowScopeSwitching = false,
+            autoPromptOnLaunch = true,
+            rootTestTag = "wallet_biometric_gate_card",
+            promptButtonTestTag = "wallet_biometric_unlock_btn",
+            mpinInputTestTag = "wallet_mpin_unlock_input",
+            mpinButtonTestTag = "wallet_mpin_unlock_btn",
+            onAuthenticateBiometric = {
+                walletGateErr = null
+                onUnlockWalletWithBiometric?.invoke(
+                    { },
+                    { err -> walletGateErr = err },
+                )
+            },
+            onAuthenticateDeviceCredential = if (onUnlockWalletWithDeviceCredential != null) {
+                {
+                    walletGateErr = null
+                    onUnlockWalletWithDeviceCredential(
+                        { },
+                        { err -> walletGateErr = err },
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Authenticate with Fingerprint, Face Unlock, or your 4-digit MPIN to view balances, bullion holdings, and initiate payouts.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SecondarySilver,
-                        textAlign = TextAlign.Center,
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    if (onUnlockWalletWithBiometric != null && biometricCapability.isUsable) {
-                        GoldPrimaryButton(
-                            text = "Unlock Wallet with Fingerprint / Face",
-                            icon = Icons.Default.Fingerprint,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("wallet_biometric_unlock_btn"),
-                            onClick = {
-                                walletGateErr = null
-                                onUnlockWalletWithBiometric(
-                                    { },
-                                    { err -> walletGateErr = err },
-                                )
-                            },
-                        )
-                        Spacer(modifier = Modifier.height(14.dp))
-                    }
-                    if (!profile?.mpinHash.isNullOrBlank()) {
-                        OutlinedTextField(
-                            value = walletGatePin,
-                            onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) walletGatePin = it },
-                            label = { Text("Or enter 4-digit MPIN") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("wallet_mpin_unlock_input"),
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        GoldOutlinedButton(
-                            text = "Unlock with MPIN",
-                            enabled = walletGatePin.length == 4,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("wallet_mpin_unlock_btn"),
-                            onClick = {
-                                if (onVerifyMpin(walletGatePin)) {
-                                    walletGatePin = ""
-                                    walletGateErr = null
-                                    onUnlockWalletWithMpin()
-                                } else {
-                                    walletGateErr = "Incorrect MPIN"
-                                }
-                            },
-                        )
-                    }
-                    if (!walletGateErr.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(walletGateErr!!, style = MaterialTheme.typography.bodySmall, color = ErrorRed)
-                    }
                 }
-            }
-        }
+            } else {
+                null
+            },
+            onVerifyMpin = onVerifyMpin,
+            onMpinSuccess = {
+                walletGateErr = null
+                onUnlockWalletWithMpin()
+            },
+            onSetupMpin = onSetupMpin,
+        )
         return
     }
 
@@ -314,6 +267,16 @@ fun WalletScreen(
                         modifier = Modifier.weight(1f),
                     )
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+                val walletAddr = BullionQrModule.formatWalletAddress(profile?.customUserId ?: "SWG000000")
+                GoldOutlinedButton(
+                    text = "Receive Gold QR ($walletAddr)",
+                    icon = Icons.Default.QrCode2,
+                    onClick = onOpenReceiveQr,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("wallet_receive_qr_btn"),
+                )
             }
         }
 
@@ -602,10 +565,15 @@ private fun WithdrawDialog(
                                 icon = Icons.Default.Fingerprint,
                                 enabled = amountValid,
                                 onClick = {
-                                    onVerifyBiometric(
-                                        { onConfirm(amtVal, selectedBank!!) },
-                                        { err -> error = err },
-                                    )
+                                    val bank = selectedBank
+                                    if (bank == null) {
+                                        error = "Select a destination bank account."
+                                    } else {
+                                        onVerifyBiometric(
+                                            { onConfirm(amtVal, bank) },
+                                            { err -> error = err },
+                                        )
+                                    }
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -613,8 +581,8 @@ private fun WithdrawDialog(
                             )
                         }
                     }
-                    if (!error.isNullOrBlank()) {
-                        Text(error!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    error?.takeIf { it.isNotBlank() }?.let { errText ->
+                        Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -623,8 +591,11 @@ private fun WithdrawDialog(
             TextButton(
                 enabled = amountValid,
                 onClick = {
-                    if (onVerifyMpin(mpin)) {
-                        onConfirm(amtVal, selectedBank!!)
+                    val bank = selectedBank
+                    if (bank == null) {
+                        error = "Select a destination bank account."
+                    } else if (onVerifyMpin(mpin)) {
+                        onConfirm(amtVal, bank)
                     } else {
                         error = "Invalid MPIN"
                     }
@@ -728,8 +699,8 @@ fun BankAccountsScreen(
                         Checkbox(checked = makePrimary, onCheckedChange = { makePrimary = it })
                         Text("Set as Primary Payout Account", color = SecondarySilver, style = MaterialTheme.typography.bodySmall)
                     }
-                    if (!formError.isNullOrBlank()) {
-                        Text(formError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    formError?.takeIf { it.isNotBlank() }?.let { errText ->
+                        Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     GoldPrimaryButton(
@@ -754,7 +725,7 @@ fun BankAccountsScreen(
         }
     }
 
-    if (pendingDeleteId != null) {
+    pendingDeleteId?.let { deleteBankId ->
         AlertDialog(
             onDismissRequest = { pendingDeleteId = null },
             title = { Text("Verify Removal") },
@@ -776,7 +747,7 @@ fun BankAccountsScreen(
                                 onClick = {
                                     onVerifyBiometric(
                                         {
-                                            onRemoveBank(pendingDeleteId!!)
+                                            onRemoveBank(deleteBankId)
                                             pendingDeleteId = null
                                             mpinCheck = ""
                                             mpinErr = null
@@ -788,13 +759,15 @@ fun BankAccountsScreen(
                             )
                         }
                     }
-                    if (!mpinErr.isNullOrBlank()) Text(mpinErr!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    mpinErr?.takeIf { it.isNotBlank() }?.let { errText ->
+                        Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     if (!hasMpin || onVerifyMpin(mpinCheck)) {
-                        onRemoveBank(pendingDeleteId!!)
+                        onRemoveBank(deleteBankId)
                         pendingDeleteId = null
                         mpinCheck = ""
                         mpinErr = null

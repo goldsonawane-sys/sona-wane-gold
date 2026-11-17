@@ -381,8 +381,8 @@ fun KycVerificationScreen(
                             }
                         }
 
-                        if (!errorMsg.isNullOrBlank()) {
-                            Text(errorMsg!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                        errorMsg?.takeIf { it.isNotBlank() }?.let { errText ->
+                            Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                         }
 
                         GoldPrimaryButton(
@@ -570,8 +570,8 @@ fun KycVerificationScreen(
                             )
                         }
 
-                        if (!errorMsg.isNullOrBlank()) {
-                            Text(errorMsg!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                        errorMsg?.takeIf { it.isNotBlank() }?.let { errText ->
+                            Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -663,8 +663,8 @@ fun KycVerificationScreen(
                             }
                         }
 
-                        if (!errorMsg.isNullOrBlank()) {
-                            Text(errorMsg!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                        errorMsg?.takeIf { it.isNotBlank() }?.let { errText ->
+                            Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {

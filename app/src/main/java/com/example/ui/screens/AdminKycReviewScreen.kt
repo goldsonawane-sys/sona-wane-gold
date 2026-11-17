@@ -337,26 +337,23 @@ fun AdminKycReviewQueueContent(
         item { Spacer(modifier = Modifier.height(24.dp)) }
     }
 
-    if (inspectedKyc != null) {
+    inspectedKyc?.let { currentKyc ->
         KycDocumentInspectorDialog(
-            kyc = inspectedKyc!!,
+            kyc = currentKyc,
             isBusy = isBusy,
             onDismiss = { inspectedKyc = null },
             onApprove = {
-                val target = inspectedKyc!!
                 inspectedKyc = null
-                decisionTarget = target to "APPROVED"
+                decisionTarget = currentKyc to "APPROVED"
             },
             onReject = {
-                val target = inspectedKyc!!
                 inspectedKyc = null
-                decisionTarget = target to "REJECTED"
+                decisionTarget = currentKyc to "REJECTED"
             },
         )
     }
 
-    if (decisionTarget != null) {
-        val (targetKyc, targetStatus) = decisionTarget!!
+    decisionTarget?.let { (targetKyc, targetStatus) ->
         KycReviewDecisionDialog(
             kyc = targetKyc,
             newStatus = targetStatus,

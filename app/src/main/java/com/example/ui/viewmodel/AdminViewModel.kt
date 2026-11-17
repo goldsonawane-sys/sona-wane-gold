@@ -15,6 +15,7 @@ import com.example.data.model.UserTransfer
 import com.example.data.repository.AdminRepository
 import com.example.data.repository.AdminRole
 import com.example.data.repository.AuditLogManager
+import com.example.data.repository.RbacCheckResult
 import com.example.data.repository.SonaWaneRepository
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
@@ -34,6 +35,9 @@ class AdminViewModel(
 
     private val _adminUser = MutableStateFlow<AdminUser?>(null)
     val adminUser: StateFlow<AdminUser?> = _adminUser.asStateFlow()
+
+    private val _rbacState = MutableStateFlow<RbacCheckResult>(RbacCheckResult.Checking)
+    val rbacState: StateFlow<RbacCheckResult> = _rbacState.asStateFlow()
 
     private val _eligibilityChecked = MutableStateFlow(false)
     val eligibilityChecked: StateFlow<Boolean> = _eligibilityChecked.asStateFlow()
@@ -81,8 +85,32 @@ class AdminViewModel(
     fun checkEligibility() {
         viewModelScope.launch {
             _eligibilityChecked.value = false
-            _adminUser.value = adminRepo.verifyAdminEligibility()
-            _eligibilityChecked.value = true
+            _rbacState.value = RbacCheckResult.Checking
+            try {
+                val result = adminRepo.verifyAdminEligibilityDetailed()
+                _rbacState.value = result
+                when (result) {
+                    is RbacCheckResult.Authorized -> {
+                        _adminUser.value = result.admin
+                    }
+                    is RbacCheckResult.AccessDenied,
+                    is RbacCheckResult.Error -> {
+                        _adminUser.value = null
+                        _adminVerified.value = false
+                    }
+                    RbacCheckResult.Checking -> Unit
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _adminUser.value = null
+                _adminVerified.value = false
+                _rbacState.value = RbacCheckResult.Error(
+                    message = e.localizedMessage ?: "Unexpected error checking RBAC authorization.",
+                )
+            } finally {
+                _eligibilityChecked.value = true
+            }
         }
     }
 

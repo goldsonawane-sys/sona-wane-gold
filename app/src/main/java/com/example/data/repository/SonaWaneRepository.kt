@@ -2,7 +2,6 @@ package com.example.data.repository
 
 import android.content.Context
 import android.os.Build
-import com.example.R
 import com.example.data.model.Announcement
 import com.example.data.model.AppConfig
 import com.example.data.model.AppNotification
@@ -11,6 +10,7 @@ import com.example.data.model.DeviceSession
 import com.example.data.model.DirectoryEntry
 import com.example.data.model.FirestoreGoldSummary
 import com.example.data.model.KycRecord
+import com.example.data.model.LiveMarketRates
 import com.example.data.model.LoginHistoryEntry
 import com.example.data.model.MarketPriceHistoryEntry
 import com.example.data.model.PriceAlert
@@ -21,13 +21,14 @@ import com.example.data.model.UserProfile
 import com.example.data.model.UserTransfer
 import com.example.data.model.WalletHoldings
 import com.example.data.model.WalletLedgerEntry
+import com.example.data.repository.FirestoreService.toObjectSafely
+import com.example.data.repository.FirestoreService.toObjectsSafely
 import com.example.util.CryptoUtils
 import com.example.util.Formatters
 import com.example.util.OperationType
 import com.example.util.handleFirestoreError
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentSnapshot.ServerTimestampBehavior
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -44,12 +45,11 @@ import java.util.UUID
 
 class SonaWaneRepository(
     private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
+    private val auth: FirebaseAuth = FirestoreService.getAuth(),
 ) {
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        db = FirestoreService.getDatabase(context),
+        auth = FirestoreService.getAuth(context),
     )
 
     private fun requireUserId(): String {
@@ -120,9 +120,17 @@ class SonaWaneRepository(
                     title = "Welcome to SONA-WANE GOLD",
                     body = "Your digital bullion vault ($customId) is ready. Complete KYC & set your MPIN to unlock full trading.",
                 )
-                userRef.get().await().toObject(UserProfile::class.java, ServerTimestampBehavior.ESTIMATE) ?: created
+                userRef.get().await().toObjectSafely<UserProfile>() ?: created
             } else {
-                val existing = snap.toObject(UserProfile::class.java, ServerTimestampBehavior.ESTIMATE)!!
+                val existing = snap.toObjectSafely<UserProfile>() ?: UserProfile(
+                    id = snap.id,
+                    userId = snap.getString("userId").orEmpty().ifBlank { uid },
+                    customUserId = snap.getString("customUserId").orEmpty().ifBlank { CryptoUtils.generateCustomUserId(uid) },
+                    fullName = snap.getString("fullName").orEmpty().ifBlank { displayName?.takeIf { it.isNotBlank() } ?: "Gold Investor" },
+                    email = snap.getString("email").orEmpty().ifBlank { email.orEmpty() },
+                    kycStatus = snap.getString("kycStatus").orEmpty().ifBlank { "NOT_STARTED" },
+                    accountStatus = snap.getString("accountStatus").orEmpty().ifBlank { "ACTIVE" },
+                )
                 if (!walletRef.get().await().exists()) {
                     walletRef.set(
                         mapOf(
@@ -234,7 +242,7 @@ class SonaWaneRepository(
         emitAll(
             db.collection("users").document(uid)
                 .snapshots()
-                .map { it.toObject(UserProfile::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectSafely<UserProfile>() }
                 .withFirestoreErrorLogging(OperationType.GET, path, uid)
         )
     }
@@ -340,7 +348,7 @@ class SonaWaneRepository(
         emitAll(
             db.collection("users").document(uid).collection("wallets").document("primary")
                 .snapshots()
-                .map { it.toObject(WalletHoldings::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectSafely<WalletHoldings>() }
                 .withFirestoreErrorLogging(OperationType.GET, path, uid)
         )
     }
@@ -352,7 +360,7 @@ class SonaWaneRepository(
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(100)
                 .snapshots()
-                .map { it.toObjects(WalletLedgerEntry::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<WalletLedgerEntry>() }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
         )
     }
@@ -364,11 +372,31 @@ class SonaWaneRepository(
                 .whereEqualTo("userId", uid)
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(TransactionRecord::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<TransactionRecord>()
                         .sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
                 }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
         )
+    }
+
+    fun observeRecentBullionTrades(uid: String, limit: Int = 25): Flow<List<TransactionRecord>> =
+        observeTransactions(uid).map { all -> filterRecentBullionTrades(all, limit) }
+
+    suspend fun fetchRecentBullionTrades(uid: String, limit: Int = 25): List<TransactionRecord> {
+        val path = "transactions"
+        return try {
+            val snap = db.collection("transactions")
+                .whereEqualTo("userId", uid)
+                .get()
+                .await()
+            val items = snap.toObjectsSafely<TransactionRecord>()
+            filterRecentBullionTrades(items, limit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.LIST, path)
+            throw e
+        }
     }
 
     fun observeAppConfig(): Flow<AppConfig> = flow {
@@ -379,7 +407,7 @@ class SonaWaneRepository(
                 .snapshots()
                 .map { snap ->
                     if (snap.exists()) {
-                        snap.toObject(AppConfig::class.java, ServerTimestampBehavior.ESTIMATE) ?: AppConfig()
+                        snap.toObjectSafely<AppConfig>() ?: AppConfig()
                     } else {
                         AppConfig()
                     }
@@ -827,7 +855,7 @@ class SonaWaneRepository(
         emitAll(
             db.collection("users").document(uid).collection("bank_accounts")
                 .snapshots()
-                .map { it.toObjects(BankAccount::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<BankAccount>() }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
         )
     }
@@ -1022,7 +1050,7 @@ class SonaWaneRepository(
             for (k in keysToTry) {
                 val snap = db.collection("user_directory").document(k).get().await()
                 if (snap.exists()) {
-                    val entry = snap.toObject(DirectoryEntry::class.java, ServerTimestampBehavior.ESTIMATE)
+                    val entry = snap.toObjectSafely<DirectoryEntry>()
                     if (entry != null && entry.uid != uid) return entry
                 }
             }
@@ -1042,7 +1070,7 @@ class SonaWaneRepository(
                 .whereEqualTo("senderUid", uid)
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(UserTransfer::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<UserTransfer>()
                         .sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
                 }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
@@ -1056,7 +1084,7 @@ class SonaWaneRepository(
                 .whereEqualTo("recipientUid", uid)
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(UserTransfer::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<UserTransfer>()
                         .sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
                 }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
@@ -1354,7 +1382,7 @@ class SonaWaneRepository(
         emitAll(
             db.collection("kyc_records").document(uid)
                 .snapshots()
-                .map { it.toObject(KycRecord::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectSafely<KycRecord>() }
                 .withFirestoreErrorLogging(OperationType.GET, path, uid)
         )
     }
@@ -1437,7 +1465,7 @@ class SonaWaneRepository(
         emitAll(
             db.collection("users").document(uid).collection("devices")
                 .snapshots()
-                .map { it.toObjects(DeviceSession::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<DeviceSession>() }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
         )
     }
@@ -1449,7 +1477,7 @@ class SonaWaneRepository(
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(30)
                 .snapshots()
-                .map { it.toObjects(LoginHistoryEntry::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<LoginHistoryEntry>() }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
         )
     }
@@ -1477,9 +1505,42 @@ class SonaWaneRepository(
         emitAll(
             db.collection("users").document(uid).collection("price_alerts")
                 .snapshots()
-                .map { it.toObjects(PriceAlert::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<PriceAlert>() }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
         )
+    }
+
+    suspend fun fetchPriceAlertsOnce(uid: String): List<PriceAlert> {
+        val path = "users/$uid/price_alerts"
+        return try {
+            db.collection("users").document(uid).collection("price_alerts")
+                .get()
+                .await()
+                .toObjectsSafely<PriceAlert>()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.LIST, path)
+            throw e
+        }
+    }
+
+    suspend fun fetchUserNotificationPrefsOnce(uid: String): Triple<Boolean, Boolean, Boolean> {
+        val path = "users/$uid"
+        return try {
+            val snap = db.collection("users").document(uid).get().await()
+            val prof = snap.toObjectSafely<UserProfile>()
+            Triple(
+                prof?.notifPriceAlerts ?: true,
+                prof?.notifSoundEnabled ?: true,
+                prof?.notifVibrationEnabled ?: true,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.GET, path)
+            Triple(true, true, true)
+        }
     }
 
     suspend fun createPriceAlert(
@@ -1619,7 +1680,7 @@ class SonaWaneRepository(
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(60)
                 .snapshots()
-                .map { it.toObjects(AppNotification::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<AppNotification>() }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
         )
     }
@@ -1631,7 +1692,7 @@ class SonaWaneRepository(
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(20)
                 .snapshots()
-                .map { it.toObjects(Announcement::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<Announcement>() }
                 .withFirestoreErrorLogging(OperationType.LIST, "announcements", uid)
         )
     }
@@ -1699,7 +1760,7 @@ class SonaWaneRepository(
                 .whereEqualTo("userId", uid)
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(SupportTicket::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<SupportTicket>()
                         .sortedByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
                 }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
@@ -1783,7 +1844,7 @@ class SonaWaneRepository(
                 .whereEqualTo("referrerUid", uid)
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(ReferralRecord::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<ReferralRecord>()
                         .sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
                 }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
@@ -1839,7 +1900,7 @@ class SonaWaneRepository(
                 .limit(daysLimit.coerceIn(1, 90).toLong())
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(MarketPriceHistoryEntry::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<MarketPriceHistoryEntry>()
                         .sortedBy { it.timestampEpochMs }
                 }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
@@ -1891,10 +1952,8 @@ class SonaWaneRepository(
                 .limit(2)
                 .snapshots()
                 .map { snap ->
-                    val entries = snap.toObjects(
-                        MarketPriceHistoryEntry::class.java,
-                        ServerTimestampBehavior.ESTIMATE,
-                    ).sortedByDescending { it.timestampEpochMs }
+                    val entries = snap.toObjectsSafely<MarketPriceHistoryEntry>()
+                        .sortedByDescending { it.timestampEpochMs }
                     buildGoldSummaryFromEntries(entries)
                 }
                 .withFirestoreErrorLogging(OperationType.LIST, path, uid)
@@ -1910,11 +1969,29 @@ class SonaWaneRepository(
                 .limit(2)
                 .get()
                 .await()
-            val entries = snap.toObjects(
-                MarketPriceHistoryEntry::class.java,
-                ServerTimestampBehavior.ESTIMATE,
-            ).sortedByDescending { it.timestampEpochMs }
+            val entries = snap.toObjectsSafely<MarketPriceHistoryEntry>()
+                .sortedByDescending { it.timestampEpochMs }
             buildGoldSummaryFromEntries(entries)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.LIST, path)
+            throw e
+        }
+    }
+
+    suspend fun fetchLatestMarketRatesOnce(): LiveMarketRates? {
+        requireUserId()
+        val path = "market_price_history"
+        return try {
+            val snap = db.collection("market_price_history")
+                .orderBy("timestampEpochMs", Query.Direction.DESCENDING)
+                .limit(2)
+                .get()
+                .await()
+            val entries = snap.toObjectsSafely<MarketPriceHistoryEntry>()
+                .sortedByDescending { it.timestampEpochMs }
+            buildLiveMarketRatesFromEntries(entries)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1959,5 +2036,56 @@ class SonaWaneRepository(
                 errorMessage = null,
             )
         }
+
+        fun buildLiveMarketRatesFromEntries(entries: List<MarketPriceHistoryEntry>): LiveMarketRates? {
+            val latest = entries.maxByOrNull { it.timestampEpochMs } ?: return null
+            if (latest.gold24kPerGram <= 0.0 && latest.silver999PerGram <= 0.0) return null
+            val previous = entries
+                .filter { it.id != latest.id || it.dateStr != latest.dateStr }
+                .maxByOrNull { it.timestampEpochMs }
+
+            val g24 = latest.gold24kPerGram
+            val g22 = latest.gold22kPerGram.takeIf { it > 0.0 } ?: (g24 * (22.0 / 24.0))
+            val g18 = latest.gold18kPerGram.takeIf { it > 0.0 } ?: (g24 * (18.0 / 24.0))
+            val ag999 = latest.silver999PerGram
+
+            val goldChange = if (previous != null && previous.gold24kPerGram > 0.0 && g24 > 0.0) {
+                ((g24 - previous.gold24kPerGram) / previous.gold24kPerGram) * 100.0
+            } else {
+                0.0
+            }
+            val silverChange = if (previous != null && previous.silver999PerGram > 0.0 && ag999 > 0.0) {
+                ((ag999 - previous.silver999PerGram) / previous.silver999PerGram) * 100.0
+            } else {
+                0.0
+            }
+
+            return LiveMarketRates(
+                gold24kBuyPerGram = g24,
+                gold24kSellPerGram = g24 * 0.985,
+                gold22kBuyPerGram = g22,
+                gold18kBuyPerGram = g18,
+                silver999BuyPerGram = ag999,
+                silver999SellPerGram = ag999 * 0.985,
+                goldChangePct = goldChange,
+                silverChangePct = silverChange,
+                goldDayHigh = maxOf(g24, previous?.gold24kPerGram ?: g24),
+                goldDayLow = minOf(g24, previous?.gold24kPerGram?.takeIf { it > 0.0 } ?: g24),
+                sourceName = latest.source.ifBlank { "Firestore market_price_history" },
+                lastUpdatedEpochMs = latest.updatedAt?.toDate()?.time ?: latest.timestampEpochMs,
+                isLive = true,
+            )
+        }
+
+        val BULLION_TRADE_CATEGORIES = setOf("GOLD_BUY", "GOLD_SELL", "SILVER_BUY", "SILVER_SELL")
+
+        fun filterRecentBullionTrades(
+            items: List<TransactionRecord>,
+            limit: Int = 25,
+        ): List<TransactionRecord> =
+            items
+                .filter { it.category in BULLION_TRADE_CATEGORIES }
+                .sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
+                .take(limit.coerceAtLeast(1))
     }
 }

@@ -2,15 +2,14 @@ package com.example.data.repository
 
 import android.content.Context
 import android.os.Build
-import com.example.R
 import com.example.data.model.AdminUser
 import com.example.data.model.AppConfig
 import com.example.data.model.AuditLog
+import com.example.data.repository.FirestoreService.toObjectsSafely
 import com.example.util.OperationType
 import com.example.util.handleFirestoreError
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentSnapshot.ServerTimestampBehavior
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
@@ -37,12 +36,11 @@ import java.util.UUID
  */
 class AuditLogManager(
     private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
+    private val auth: FirebaseAuth = FirestoreService.getAuth(),
 ) {
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        db = FirestoreService.getDatabase(context),
+        auth = FirestoreService.getAuth(context),
     )
 
     enum class AuditCategory(val label: String) {
@@ -442,7 +440,7 @@ class AuditLogManager(
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(limit.coerceIn(1, 500).toLong())
                 .snapshots()
-                .map { it.toObjects(AuditLog::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<AuditLog>() }
                 .catch { e ->
                     if (e is CancellationException) throw e
                     handleFirestoreError(e, OperationType.LIST, COLLECTION_AUDIT_LOGS)
@@ -458,7 +456,7 @@ class AuditLogManager(
                 .limit(limit.coerceIn(1, 500).toLong())
                 .get()
                 .await()
-                .toObjects(AuditLog::class.java, ServerTimestampBehavior.ESTIMATE)
+                .toObjectsSafely<AuditLog>()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

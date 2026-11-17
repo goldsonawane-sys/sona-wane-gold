@@ -5,7 +5,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
+import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -23,10 +29,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,6 +46,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -51,6 +60,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -107,6 +117,8 @@ fun TransferScreen(
     outgoingTransfers: List<UserTransfer>,
     incomingTransfers: List<UserTransfer>,
     initialLookupQuery: String = "",
+    initialAssetType: String = "GOLD_24K",
+    initialQuantity: String = "0.5",
     isBusy: Boolean,
     onLookupRecipient: (String) -> Unit,
     onClearRecipient: () -> Unit,
@@ -118,8 +130,15 @@ fun TransferScreen(
     onBack: () -> Unit,
 ) {
     var queryInput by remember(initialLookupQuery) { mutableStateOf(initialLookupQuery) }
-    var assetType by remember { mutableStateOf("GOLD_24K") }
-    var qtyInput by remember { mutableStateOf("0.5") }
+    var assetType by remember(initialAssetType) {
+        mutableStateOf(
+            initialAssetType.takeIf { it in listOf("GOLD_24K", "GOLD_22K", "GOLD_18K", "SILVER_999", "INR") }
+                ?: "GOLD_24K"
+        )
+    }
+    var qtyInput by remember(initialQuantity) {
+        mutableStateOf(initialQuantity.takeIf { it.toDoubleOrNull()?.let { v -> v > 0.0 } == true } ?: "0.5")
+    }
     var showMpinDialog by remember { mutableStateOf(false) }
     var mpinInput by remember { mutableStateOf("") }
     var mpinError by remember { mutableStateOf<String?>(null) }
@@ -138,6 +157,7 @@ fun TransferScreen(
 
     Scaffold(
         containerColor = DeepBlack,
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = { SonaWaneTopBar(title = "User-to-User Transfer", subtitle = "Atomic Verified Bullion & Wallet Transfers", onBack = onBack) },
     ) { padding ->
         LazyColumn(
@@ -169,8 +189,9 @@ fun TransferScreen(
                         )
                         GoldOutlinedButton(
                             text = "Scan QR",
+                            icon = Icons.Default.QrCodeScanner,
                             onClick = onOpenQrScanner,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag("transfer_scan_qr_btn"),
                         )
                     }
 
@@ -187,15 +208,19 @@ fun TransferScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                     Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = SuccessGreen)
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column {
                                         Text(recipient.displayName, style = MaterialTheme.typography.titleMedium, color = PureWhite)
-                                        Text("ID: ${recipient.customUserId}", style = MonoSmallStyle, color = LightGold)
+                                        Text("Wallet: ${BullionQrModule.formatWalletAddress(recipient.customUserId)}", style = MonoSmallStyle, color = LightGold)
+                                        Text("ID: ${recipient.customUserId}", style = MaterialTheme.typography.labelSmall, color = SecondarySilver)
                                     }
                                 }
-                                TextButton(onClick = onClearRecipient) { Text("Change", color = AmberOrange) }
+                                TextButton(
+                                    onClick = onClearRecipient,
+                                    modifier = Modifier.minimumInteractiveComponentSize(),
+                                ) { Text("Change", color = AmberOrange) }
                             }
                         }
 
@@ -206,7 +231,12 @@ fun TransferScreen(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             listOf("GOLD_24K", "GOLD_22K", "GOLD_18K", "SILVER_999", "INR").forEach { a ->
-                                FilterChip(selected = assetType == a, onClick = { assetType = a }, label = { Text(a.replace("_", " ")) })
+                                FilterChip(
+                                    selected = assetType == a,
+                                    onClick = { assetType = a },
+                                    label = { Text(BullionQrModule.formatAssetLabel(a)) },
+                                    modifier = Modifier.testTag("transfer_asset_chip_${a.lowercase()}"),
+                                )
                             }
                         }
                         Text(
@@ -221,7 +251,7 @@ fun TransferScreen(
                             label = { Text(if (assetType == "INR") "Amount (₹)" else "Quantity (grams)") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().testTag("transfer_qty_input"),
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         KeyValueRow("Recipient", "${recipient.displayName} (${recipient.customUserId})")
@@ -230,7 +260,7 @@ fun TransferScreen(
                         GoldPrimaryButton(
                             text = "Confirm & Send Transfer",
                             enabled = !isBusy && qtyVal > 0.0 && qtyVal <= maxAvailable + 1e-6,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().testTag("transfer_confirm_btn"),
                             onClick = {
                                 if (profile?.mpinHash.isNullOrBlank()) onSetupMpin() else showMpinDialog = true
                             },
@@ -296,12 +326,12 @@ fun TransferScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    if (biometricAllowed) {
+                    if (biometricAllowed && onVerifyBiometric != null) {
                         GoldOutlinedButton(
                             text = "Authorize with Fingerprint / Face",
                             icon = Icons.Default.Fingerprint,
                             onClick = {
-                                onVerifyBiometric!!(
+                                onVerifyBiometric(
                                     {
                                         showMpinDialog = false
                                         mpinInput = ""
@@ -316,7 +346,9 @@ fun TransferScreen(
                                 .testTag("transfer_biometric_confirm_btn"),
                         )
                     }
-                    if (!mpinError.isNullOrBlank()) Text(mpinError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    mpinError?.takeIf { it.isNotBlank() }?.let { errText ->
+                        Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             },
             confirmButton = {
@@ -344,24 +376,38 @@ fun MyQrScreen(
 ) {
     val context = LocalContext.current
     val customId = profile?.customUserId ?: "SWG000000"
+    val walletAddress = remember(customId) { BullionQrModule.formatWalletAddress(customId) }
     val displayName = profile?.fullName ?: "Sona-Wane Investor"
 
     var qrVersion by remember { mutableStateOf(0) }
     var maskDisplayName by remember { mutableStateOf(false) }
-    val encryptedEnvelope = remember(customId, displayName, qrVersion, maskDisplayName) {
-        com.example.util.BullionQrModule.generateEncryptedPayload(
+    var requestedAsset by remember { mutableStateOf("GOLD_24K") }
+    var requestedGramsInput by remember { mutableStateOf("") }
+    val parsedGrams = requestedGramsInput.toDoubleOrNull()?.takeIf { it > 0.0 } ?: 0.0
+
+    val encryptedEnvelope = remember(customId, displayName, qrVersion, maskDisplayName, requestedAsset, parsedGrams) {
+        BullionQrModule.generateEncryptedPayload(
             customUserId = customId,
             displayName = if (maskDisplayName) "" else displayName,
+            requestedAsset = if (requestedAsset == "ANY") "" else requestedAsset,
+            requestedGrams = parsedGrams,
         )
     }
     val qrBitmap = remember(encryptedEnvelope.encryptedToken) {
-        com.example.util.BullionQrModule.generateQrBitmap(encryptedEnvelope.encryptedToken, 580)
+        BullionQrModule.generateQrBitmap(encryptedEnvelope.encryptedToken, 580)
     }
     var copiedNotice by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         containerColor = DeepBlack,
-        topBar = { SonaWaneTopBar(title = "My Encrypted Bullion QR", subtitle = "AES-256-GCM Protected P2P Transfer ID", onBack = onBack) },
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            SonaWaneTopBar(
+                title = "Receive Bullion Wallet QR",
+                subtitle = "Unique ZXing + AES-256-GCM Wallet Address QR",
+                onBack = onBack,
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -379,12 +425,30 @@ fun MyQrScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        StatusPill(text = "AES-256-GCM", color = SuccessGreen)
+                        StatusPill(text = "ZXING • AES-256-GCM", color = SuccessGreen)
                         StatusPill(text = "Nonce: ${encryptedEnvelope.nonce}", color = RoyalGold)
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(displayName, style = MaterialTheme.typography.headlineMedium, color = PureWhite)
-                    Text("User ID: $customId", style = MonoSmallStyle, color = LightGold)
+                    Text(
+                        text = "Wallet Address: $walletAddress",
+                        style = MonoSmallStyle,
+                        color = LightGold,
+                        modifier = Modifier.testTag("wallet_address_qr_text"),
+                    )
+                    Text("User ID: $customId", style = MaterialTheme.typography.labelSmall, color = SecondarySilver)
+                    if (parsedGrams > 0.0 || requestedAsset != "ANY") {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val reqDesc = buildString {
+                            append("Requesting ")
+                            if (parsedGrams > 0.0) {
+                                append(Formatters.formatGrams(parsedGrams))
+                                append(" of ")
+                            }
+                            append(BullionQrModule.formatAssetLabel(requestedAsset))
+                        }
+                        StatusPill(text = reqDesc, color = AmberOrange)
+                    }
                     Spacer(modifier = Modifier.height(14.dp))
                     if (qrBitmap != null) {
                         Box(
@@ -398,7 +462,7 @@ fun MyQrScreen(
                         ) {
                             Image(
                                 bitmap = qrBitmap.asImageBitmap(),
-                                contentDescription = "Encrypted SONA-WANE GOLD QR Code",
+                                contentDescription = "Unique ZXing Wallet Address QR Code for Receiving Gold and Silver",
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -417,7 +481,7 @@ fun MyQrScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Mask Name in Encrypted QR", style = MaterialTheme.typography.bodySmall, color = PureWhite)
-                            Text("Only reveal User ID inside encrypted token", style = MaterialTheme.typography.labelSmall, color = SecondarySilver)
+                            Text("Only reveal wallet address inside encrypted token", style = MaterialTheme.typography.labelSmall, color = SecondarySilver)
                         }
                         androidx.compose.material3.Switch(
                             checked = maskDisplayName,
@@ -427,28 +491,93 @@ fun MyQrScreen(
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Your User ID is AES-256-GCM encrypted with a unique random IV. Plain QR readers cannot inspect your identity or bank/PAN details.",
+                        text = "Other users scan this ZXing QR code to auto-fill your verified wallet address and send 24K, 22K, 18K Gold or 999 Silver transfers directly.",
                         style = MaterialTheme.typography.labelSmall,
                         color = SecondarySilver,
                     )
                 }
             }
 
+            // Optional Gold & Silver Transfer Request Configuration
+            LuxuryCard {
+                Text("Gold & Silver Receive Options (Encoded in QR)", style = MaterialTheme.typography.titleMedium, color = LightGold)
+                Spacer(modifier = Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            "GOLD_24K" to "24K Gold",
+                            "GOLD_22K" to "22K Gold",
+                            "GOLD_18K" to "18K Gold",
+                        ).forEach { (key, label) ->
+                            FilterChip(
+                                selected = requestedAsset == key,
+                                onClick = { requestedAsset = key },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("qr_asset_chip_${key.lowercase()}"),
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            "SILVER_999" to "999 Silver",
+                            "ANY" to "Open Transfer",
+                        ).forEach { (key, label) ->
+                            FilterChip(
+                                selected = requestedAsset == key,
+                                onClick = { requestedAsset = key },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("qr_asset_chip_${key.lowercase()}"),
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf("" to "Any g", "0.5" to "0.5g", "1" to "1g", "2" to "2g", "5" to "5g").forEach { (valStr, chipLabel) ->
+                        FilterChip(
+                            selected = requestedGramsInput == valStr,
+                            onClick = { requestedGramsInput = valStr },
+                            label = { Text(chipLabel) },
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = requestedGramsInput,
+                    onValueChange = { requestedGramsInput = it },
+                    label = { Text("Requested Gold / Silver Weight in grams (optional)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("qr_requested_grams_input"),
+                )
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 GoldOutlinedButton(
-                    text = "Rotate QR Key",
+                    text = "Rotate Unique QR",
                     onClick = {
                         qrVersion++
-                        copiedNotice = "Rotated with a fresh unique IV"
+                        copiedNotice = "Generated fresh unique ZXing QR with new IV"
                     },
                     modifier = Modifier.weight(1f).testTag("rotate_encrypted_qr_btn"),
                 )
                 GoldOutlinedButton(
-                    text = "Copy Encrypted Token",
+                    text = "Copy QR Token",
                     onClick = {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("Encrypted Bullion QR", encryptedEnvelope.encryptedToken))
-                        copiedNotice = "Encrypted QR token copied!"
+                        cm.setPrimaryClip(ClipData.newPlainText("Encrypted Wallet QR", encryptedEnvelope.encryptedToken))
+                        copiedNotice = "Encrypted wallet QR token copied!"
                     },
                     modifier = Modifier.weight(1f).testTag("copy_encrypted_qr_btn"),
                 )
@@ -456,19 +585,20 @@ fun MyQrScreen(
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 GoldOutlinedButton(
-                    text = "Copy User ID",
+                    text = "Copy Wallet Address",
+                    icon = Icons.Default.ContentCopy,
                     onClick = {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("User ID", customId))
-                        copiedNotice = "User ID copied!"
+                        cm.setPrimaryClip(ClipData.newPlainText("Wallet Address", walletAddress))
+                        copiedNotice = "Wallet address $walletAddress copied!"
                     },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).testTag("copy_wallet_address_btn"),
                 )
                 GoldPrimaryButton(
                     text = "Share QR Image",
                     icon = Icons.Default.Share,
                     onClick = {
-                        com.example.util.BullionQrModule.shareEncryptedQr(
+                        BullionQrModule.shareEncryptedQr(
                             context = context,
                             encryptedPayload = encryptedEnvelope.encryptedToken,
                             customUserId = customId,
@@ -478,12 +608,12 @@ fun MyQrScreen(
                 )
             }
 
-            if (!copiedNotice.isNullOrBlank()) {
-                Text(copiedNotice!!, style = MaterialTheme.typography.labelMedium, color = SuccessGreen)
+            copiedNotice?.takeIf { it.isNotBlank() }?.let { noticeText ->
+                Text(noticeText, style = MaterialTheme.typography.labelMedium, color = SuccessGreen)
             }
 
             GoldPrimaryButton(
-                text = "Scan Another User's Encrypted QR",
+                text = "Scan Another User's Wallet QR",
                 icon = Icons.Default.QrCodeScanner,
                 onClick = onOpenScanner,
                 modifier = Modifier.fillMaxWidth().testTag("open_qr_scanner_btn"),
@@ -508,14 +638,38 @@ fun QrScannerScreen(
     var scannedOnce by remember { mutableStateOf(false) }
     var scanError by remember { mutableStateOf<String?>(null) }
 
-    val launcher = rememberLauncherForActivityResult(
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { granted -> hasCameraPermission = granted },
     )
 
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri: Uri? ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            val decodedText = runCatching {
+                val bmp = decodeBitmapFromUri(context, uri) ?: return@runCatching null
+                BullionQrModule.decodeQrFromBitmap(bmp)
+            }.getOrNull()
+
+            if (decodedText.isNullOrBlank()) {
+                scanError = "No QR code found in the selected photo. Choose a clear ZXing wallet QR screenshot."
+            } else {
+                val resolved = BullionQrModule.resolveUserIdOrEmpty(decodedText)
+                if (resolved.isNotBlank()) {
+                    scanError = null
+                    onQrDetected(decodedText)
+                } else {
+                    scanError = "QR code failed AES-256-GCM authentication verification."
+                }
+            }
+        },
+    )
+
     Scaffold(
         containerColor = DeepBlack,
-        topBar = { SonaWaneTopBar(title = "Scan Transfer QR", subtitle = "Decrypts SONA-WANE Encrypted QR", onBack = onBack) },
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = { SonaWaneTopBar(title = "Scan Transfer QR", subtitle = "ZXing Live Camera & Photo QR Scanner", onBack = onBack) },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -556,48 +710,58 @@ fun QrScannerScreen(
                                     )
                                 }
                                 val analysis = ImageAnalysis.Builder()
+                                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                     .build()
                                 analysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                                    if (!scannedOnce) {
-                                        val plane = imageProxy.planes.firstOrNull()
-                                        if (plane != null) {
-                                            val buffer = plane.buffer
-                                            val bytes = ByteArray(buffer.remaining())
-                                            buffer.get(bytes)
-                                            val source = PlanarYUVLuminanceSource(
-                                                bytes,
-                                                imageProxy.width,
-                                                imageProxy.height,
-                                                0,
-                                                0,
-                                                imageProxy.width,
-                                                imageProxy.height,
-                                                false,
-                                            )
-                                            val bitmap = BinaryBitmap(HybridBinarizer(source))
-                                            runCatching {
-                                                val result = reader.decodeWithState(bitmap)
-                                                val rawText = result.text.orEmpty()
-                                                if (rawText.isNotBlank()) {
-                                                    val resolved = com.example.util.BullionQrModule.resolveUserIdOrEmpty(rawText)
-                                                    if (resolved.isNotBlank()) {
-                                                        scannedOnce = true
-                                                        previewView.post {
-                                                            scanError = null
-                                                            onQrDetected(resolved)
-                                                        }
-                                                    } else {
-                                                        previewView.post {
-                                                            scanError = "QR code failed authentication tag verification."
+                                    try {
+                                        if (!scannedOnce) {
+                                            val plane = imageProxy.planes.firstOrNull()
+                                            if (plane != null) {
+                                                val width = imageProxy.width
+                                                val height = imageProxy.height
+                                                val packedY = extractTightYPlane(
+                                                    buffer = plane.buffer,
+                                                    width = width,
+                                                    height = height,
+                                                    rowStride = plane.rowStride,
+                                                    pixelStride = plane.pixelStride,
+                                                )
+                                                val source = PlanarYUVLuminanceSource(
+                                                    packedY,
+                                                    width,
+                                                    height,
+                                                    0,
+                                                    0,
+                                                    width,
+                                                    height,
+                                                    false,
+                                                )
+                                                val bitmap = BinaryBitmap(HybridBinarizer(source))
+                                                runCatching {
+                                                    val result = reader.decodeWithState(bitmap)
+                                                    val rawText = result.text.orEmpty()
+                                                    if (rawText.isNotBlank()) {
+                                                        val resolved = BullionQrModule.resolveUserIdOrEmpty(rawText)
+                                                        if (resolved.isNotBlank()) {
+                                                            scannedOnce = true
+                                                            previewView.post {
+                                                                scanError = null
+                                                                onQrDetected(rawText)
+                                                            }
+                                                        } else {
+                                                            previewView.post {
+                                                                scanError = "QR code failed authentication tag verification."
+                                                            }
                                                         }
                                                     }
                                                 }
+                                                reader.reset()
                                             }
-                                            reader.reset()
                                         }
+                                    } finally {
+                                        imageProxy.close()
                                     }
-                                    imageProxy.close()
                                 }
                                 runCatching {
                                     cameraProvider.unbindAll()
@@ -617,22 +781,38 @@ fun QrScannerScreen(
                 LuxuryCard {
                     Text("Camera Permission Required for QR Scanning", style = MaterialTheme.typography.titleMedium, color = LightGold)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("Grant camera permission only when scanning another user's encrypted QR code, or paste their User ID / SWGQR2 token below.", style = MaterialTheme.typography.bodySmall, color = SecondarySilver)
+                    Text("Grant camera permission only when scanning another user's encrypted QR code, pick a QR screenshot from gallery, or paste their Wallet Address / SWGQR2 token below.", style = MaterialTheme.typography.bodySmall, color = SecondarySilver)
                     Spacer(modifier = Modifier.height(12.dp))
                     GoldPrimaryButton(
                         text = "Grant Camera Permission",
-                        onClick = { launcher.launch(Manifest.permission.CAMERA) },
-                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
+                        modifier = Modifier.fillMaxWidth().testTag("grant_camera_qr_btn"),
                     )
                 }
             }
 
-            if (!scanError.isNullOrBlank()) {
-                Text(scanError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+            GoldOutlinedButton(
+                text = "Scan QR Photo from Gallery (ZXing)",
+                icon = Icons.Default.PhotoLibrary,
+                onClick = {
+                    photoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                modifier = Modifier.fillMaxWidth().testTag("scan_qr_gallery_btn"),
+            )
+
+            scanError?.takeIf { it.isNotBlank() }?.let { scanErrText ->
+                Text(
+                    text = scanErrText,
+                    color = ErrorRed,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("qr_scan_error_text"),
+                )
             }
 
             LuxuryCard {
-                Text("Or Enter Encrypted QR Token / User ID", style = MaterialTheme.typography.titleMedium, color = PureWhite)
+                Text("Or Enter Encrypted QR Token / Wallet Address", style = MaterialTheme.typography.titleMedium, color = PureWhite)
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(
                     value = manualCode,
@@ -640,7 +820,7 @@ fun QrScannerScreen(
                         manualCode = it
                         scanError = null
                     },
-                    label = { Text("Encrypted Token (SWGQR2...) or User ID (SWG...)") },
+                    label = { Text("Token (SWGQR2...), Wallet (SWG-VAULT-...), or User ID") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("manual_qr_input"),
                 )
@@ -649,10 +829,10 @@ fun QrScannerScreen(
                     text = "Verify & Decrypt Recipient",
                     enabled = manualCode.isNotBlank(),
                     onClick = {
-                        val resolved = com.example.util.BullionQrModule.resolveUserIdOrEmpty(manualCode)
+                        val resolved = BullionQrModule.resolveUserIdOrEmpty(manualCode)
                         if (resolved.isNotBlank()) {
                             scanError = null
-                            onQrDetected(resolved)
+                            onQrDetected(manualCode)
                         } else {
                             scanError = "Invalid or tampered encrypted QR token. Ask recipient to rotate their QR."
                         }
@@ -660,6 +840,55 @@ fun QrScannerScreen(
                     modifier = Modifier.fillMaxWidth().testTag("verify_manual_qr_btn"),
                 )
             }
+        }
+    }
+}
+
+private fun extractTightYPlane(
+    buffer: java.nio.ByteBuffer,
+    width: Int,
+    height: Int,
+    rowStride: Int,
+    pixelStride: Int,
+): ByteArray {
+    buffer.rewind()
+    val tight = ByteArray(width * height)
+    if (pixelStride == 1 && rowStride == width && buffer.remaining() >= tight.size) {
+        buffer.get(tight, 0, tight.size)
+        return tight
+    }
+    val rowBuf = ByteArray(rowStride)
+    var outIdx = 0
+    for (row in 0 until height) {
+        val toRead = minOf(buffer.remaining(), rowStride)
+        if (toRead <= 0) break
+        buffer.get(rowBuf, 0, toRead)
+        if (pixelStride == 1) {
+            val copyLen = minOf(width, toRead)
+            System.arraycopy(rowBuf, 0, tight, outIdx, copyLen)
+            outIdx += copyLen
+        } else {
+            for (col in 0 until width) {
+                val idx = col * pixelStride
+                if (idx < toRead) {
+                    tight[outIdx++] = rowBuf[idx]
+                }
+            }
+        }
+    }
+    return tight
+}
+
+private fun decodeBitmapFromUri(context: Context, uri: Uri): Bitmap? {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val source = ImageDecoder.createSource(context.contentResolver, uri)
+        ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+            decoder.isMutableRequired = false
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+        }
+    } else {
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream)
         }
     }
 }

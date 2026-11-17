@@ -79,6 +79,7 @@ import com.example.ui.components.KeyValueRow
 import com.example.ui.components.LuxuryCard
 import com.example.ui.components.SonaWaneTopBar
 import com.example.ui.components.StatusPill
+import com.example.ui.components.TradeStatusResolver
 import com.example.ui.components.statusColorFor
 import com.example.ui.theme.AmberOrange
 import com.example.ui.theme.DeepBlack
@@ -178,9 +179,9 @@ fun TransactionHistoryScreen(
         }
     }
 
-    if (selectedTx != null) {
+    selectedTx?.let { txItem ->
         TransactionDetailDialog(
-            tx = selectedTx!!,
+            tx = txItem,
             userName = userName,
             onDismiss = { selectedTx = null },
             onContactSupport = {
@@ -313,8 +314,13 @@ fun BullionTransactionHistoryRowCard(
                 )
             }
             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val statusDisplay = TradeStatusResolver.resolveStatus(tx.status)
                 Text(Formatters.formatInr(tx.totalAmount), style = MonoPriceStyle, color = LightGold)
-                StatusPill(text = tx.status, color = statusColorFor(tx.status))
+                StatusPill(
+                    text = statusDisplay.label,
+                    color = statusDisplay.color,
+                    icon = statusDisplay.icon,
+                )
             }
         }
     }
@@ -649,8 +655,8 @@ fun HelpSupportScreen(
         }
     }
 
-    if (activeTicket != null) {
-        val current = tickets.firstOrNull { it.id == activeTicket!!.id } ?: activeTicket!!
+    activeTicket?.let { active ->
+        val current = tickets.firstOrNull { it.id == active.id } ?: active
         AlertDialog(
             onDismissRequest = { activeTicket = null },
             title = { Text("${current.ticketCode} (${current.status})") },

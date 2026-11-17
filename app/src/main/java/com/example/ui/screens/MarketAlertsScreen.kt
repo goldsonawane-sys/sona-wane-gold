@@ -289,7 +289,7 @@ fun MarketAlertsScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Set Price Alert Target", style = MaterialTheme.typography.titleMedium, color = LightGold)
                             Text(
-                                text = "Choose purity, enter a target price, and select alert frequency.",
+                                text = "Checks Firestore & live Gold/Silver targets via WorkManager (15m checks) and pushes alerts.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = SecondarySilver,
                             )
@@ -446,9 +446,9 @@ fun MarketAlertsScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    if (!inlineFormError.isNullOrBlank()) {
+                    inlineFormError?.takeIf { it.isNotBlank() }?.let { errMsg ->
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text(inlineFormError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                        Text(errMsg, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -644,8 +644,7 @@ fun MarketAlertsScreen(
         }
     }
 
-    if (editingAlert != null) {
-        val currentEditing = editingAlert!!
+    editingAlert?.let { currentEditing ->
         AlertEditorDialog(
             initialAlert = currentEditing,
             spotByMetal = spotByMetal,
@@ -746,9 +745,9 @@ private fun BackgroundGoldDropMonitorCard(
             modifier = Modifier.fillMaxWidth().testTag("workmanager_threshold_input"),
         )
 
-        if (!validationErr.isNullOrBlank()) {
+        validationErr?.takeIf { it.isNotBlank() }?.let { errText ->
             Spacer(modifier = Modifier.height(4.dp))
-            Text(validationErr!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+            Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -909,8 +908,8 @@ private fun AlertEditorDialog(
                     Switch(checked = isActive, onCheckedChange = { isActive = it })
                 }
 
-                if (!errMsg.isNullOrBlank()) {
-                    Text(errMsg!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                errMsg?.takeIf { it.isNotBlank() }?.let { errText ->
+                    Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },

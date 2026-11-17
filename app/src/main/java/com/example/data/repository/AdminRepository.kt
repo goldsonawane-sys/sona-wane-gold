@@ -1,7 +1,6 @@
 package com.example.data.repository
 
 import android.content.Context
-import com.example.R
 import com.example.data.model.AdminUser
 import com.example.data.model.Announcement
 import com.example.data.model.AppConfig
@@ -12,16 +11,21 @@ import com.example.data.model.SupportTicket
 import com.example.data.model.TransactionRecord
 import com.example.data.model.UserProfile
 import com.example.data.model.UserTransfer
+import com.example.data.repository.FirestoreService.toObjectSafely
+import com.example.data.repository.FirestoreService.toObjectsSafely
 import com.example.util.CryptoUtils
 import com.example.util.OperationType
 import com.example.util.handleFirestoreError
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentSnapshot.ServerTimestampBehavior
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.snapshots
+import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -51,15 +55,21 @@ val ALL_ADMIN_PERMISSIONS: List<Pair<String, String>> = listOf(
     "REPORTS" to "Analytics, Audit Trail & CSV",
 )
 
+sealed class RbacCheckResult {
+    data object Checking : RbacCheckResult()
+    data class Authorized(val admin: AdminUser) : RbacCheckResult()
+    data class AccessDenied(val reason: String, val email: String = "") : RbacCheckResult()
+    data class Error(val message: String, val isPermissionDenied: Boolean = false) : RbacCheckResult()
+}
+
 class AdminRepository(
     private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
+    private val auth: FirebaseAuth = FirestoreService.getAuth(),
     val auditLogManager: AuditLogManager = AuditLogManager(db, auth),
 ) {
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        db = FirestoreService.getDatabase(context),
+        auth = FirestoreService.getAuth(context),
     )
 
     companion object {
@@ -72,65 +82,237 @@ class AdminRepository(
                 "SWG-ADM-${uid.take(6).uppercase().ifBlank { "OP01" }}"
             }
         }
+
+        private fun safeTimestamp(raw: Any?): Timestamp? = when (raw) {
+            is Timestamp -> raw
+            is Date -> Timestamp(raw)
+            is Number -> runCatching { Timestamp(Date(raw.toLong())) }.getOrNull()
+            else -> null
+        }
+
+        fun parseAdminMapSafely(docId: String, data: Map<String, Any?>): AdminUser {
+            val uid = (data["uid"] as? String)?.trim().orEmpty().ifBlank { docId }
+            val email = (data["email"] as? String)?.trim().orEmpty()
+            val displayName = (data["displayName"] as? String)?.trim().orEmpty()
+                .ifBlank { email.substringBefore("@").ifBlank { "Admin Operator" } }
+            val operatorId = (data["operatorId"] as? String)?.trim().orEmpty()
+            val role = (data["role"] as? String)?.trim().orEmpty()
+            val permissions = (data["permissions"] as? List<*>)
+                ?.mapNotNull { (it as? String)?.trim()?.takeIf { p -> p.isNotEmpty() } }
+                ?: emptyList()
+            val isActive = (data["isActive"] as? Boolean)
+                ?: (data["active"] as? Boolean)
+                ?: false
+            val adminPinHash = (data["adminPinHash"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            val biometricAdminEnabled = (data["biometricAdminEnabled"] as? Boolean) ?: false
+
+            return AdminUser(
+                id = docId,
+                uid = uid,
+                email = email,
+                displayName = displayName,
+                operatorId = operatorId,
+                role = role,
+                permissions = permissions,
+                isActive = isActive,
+                adminPinHash = adminPinHash,
+                biometricAdminEnabled = biometricAdminEnabled,
+                lastLoginAt = safeTimestamp(data["lastLoginAt"]),
+                createdAt = safeTimestamp(data["createdAt"]),
+                updatedAt = safeTimestamp(data["updatedAt"]),
+            )
+        }
+
+        fun parseAdminSafely(doc: DocumentSnapshot?): AdminUser? {
+            if (doc == null || !doc.exists()) return null
+            val data = try {
+                doc.data
+            } catch (_: Exception) {
+                null
+            } ?: return null
+            return try {
+                parseAdminMapSafely(doc.id, data)
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    suspend fun verifyAdminEligibilityDetailed(): RbacCheckResult {
+        val user = try {
+            auth.currentUser
+        } catch (_: Exception) {
+            null
+        } ?: return RbacCheckResult.AccessDenied(
+            reason = "No active authenticated session found. Please sign in with Google first.",
+        )
+
+        val uid = user.uid.trim()
+        val userEmail = user.email?.trim().orEmpty()
+        var firestoreFailure: FirebaseFirestoreException? = null
+        var genericFailure: Exception? = null
+
+        return try {
+            var matchedDoc: DocumentSnapshot? = null
+
+            // 1. Primary lookup: admins/{uid}
+            if (uid.isNotBlank()) {
+                try {
+                    val uidDoc = db.collection("admins").document(uid).get().await()
+                    if (uidDoc.exists()) {
+                        matchedDoc = uidDoc
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: FirebaseFirestoreException) {
+                    firestoreFailure = e
+                    handleFirestoreError(e, OperationType.GET, "admins/$uid")
+                } catch (e: Exception) {
+                    genericFailure = e
+                }
+            }
+
+            // 2. Fallback lookup: query where email == current user's email
+            if (matchedDoc == null && userEmail.isNotBlank()) {
+                try {
+                    val emailSnap = db.collection("admins")
+                        .whereEqualTo("email", userEmail)
+                        .limit(1)
+                        .get()
+                        .await()
+                    matchedDoc = emailSnap.documents.firstOrNull { it.exists() }
+                    if (matchedDoc == null) {
+                        val lowerEmail = userEmail.lowercase()
+                        if (lowerEmail != userEmail) {
+                            val lowerSnap = db.collection("admins")
+                                .whereEqualTo("email", lowerEmail)
+                                .limit(1)
+                                .get()
+                                .await()
+                            matchedDoc = lowerSnap.documents.firstOrNull { it.exists() }
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: FirebaseFirestoreException) {
+                    if (firestoreFailure == null) firestoreFailure = e
+                    handleFirestoreError(e, OperationType.LIST, "admins")
+                } catch (e: Exception) {
+                    if (genericFailure == null) genericFailure = e
+                }
+            }
+
+            if (matchedDoc != null) {
+                val parsed = parseAdminSafely(matchedDoc)
+                    ?: return RbacCheckResult.Error(
+                        message = "Admin record exists but could not be read safely. Please contact the Super Admin.",
+                    )
+                val resolvedEmail = parsed.email.ifBlank { userEmail }
+                val isBootstrapped = user.isEmailVerified &&
+                    userEmail.equals(BOOTSTRAPPED_SUPER_ADMIN_EMAIL, ignoreCase = true)
+
+                if (!parsed.isActive && !isBootstrapped) {
+                    return RbacCheckResult.AccessDenied(
+                        reason = "Your administrator account is currently inactive (isActive = false).",
+                        email = resolvedEmail,
+                    )
+                }
+                if (parsed.role.isBlank()) {
+                    return RbacCheckResult.AccessDenied(
+                        reason = "Administrator role is missing or unassigned in Firestore RBAC.",
+                        email = resolvedEmail,
+                    )
+                }
+
+                val resolvedUid = parsed.uid.ifBlank { uid }
+                val resolvedOpId = parsed.operatorId.ifBlank { defaultOperatorId(resolvedUid, resolvedEmail) }
+                val resolvedPerms = parsed.permissions.ifEmpty {
+                    if (parsed.role == AdminRole.SUPER_ADMIN.name) AdminRole.SUPER_ADMIN.permissions else emptyList()
+                }
+                return RbacCheckResult.Authorized(
+                    parsed.copy(
+                        uid = resolvedUid,
+                        email = resolvedEmail,
+                        operatorId = resolvedOpId,
+                        permissions = resolvedPerms,
+                        isActive = true,
+                    )
+                )
+            }
+
+            // 3. Bootstrapped Super Admin fallback when document has not yet been provisioned
+            if (user.isEmailVerified && userEmail.equals(BOOTSTRAPPED_SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+                val opId = defaultOperatorId(uid, userEmail)
+                val superAdmin = AdminUser(
+                    id = uid,
+                    uid = uid,
+                    email = userEmail,
+                    displayName = user.displayName?.takeIf { it.isNotBlank() } ?: "Super Admin",
+                    operatorId = opId,
+                    role = AdminRole.SUPER_ADMIN.name,
+                    permissions = AdminRole.SUPER_ADMIN.permissions,
+                    isActive = true,
+                )
+                try {
+                    db.collection("admins").document(uid).set(
+                        mapOf(
+                            "uid" to uid,
+                            "email" to superAdmin.email,
+                            "displayName" to superAdmin.displayName,
+                            "operatorId" to opId,
+                            "role" to superAdmin.role,
+                            "permissions" to superAdmin.permissions,
+                            "isActive" to true,
+                            "biometricAdminEnabled" to false,
+                            "createdAt" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp(),
+                        )
+                    ).await()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
+                return RbacCheckResult.Authorized(superAdmin)
+            }
+
+            if (firestoreFailure != null) {
+                val isPerm = firestoreFailure.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+                val msg = if (isPerm) {
+                    "Firestore permission denied while verifying RBAC access (${firestoreFailure.localizedMessage ?: "PERMISSION_DENIED"})."
+                } else {
+                    "Unable to reach Firestore RBAC service: ${firestoreFailure.localizedMessage ?: firestoreFailure.code.name}."
+                }
+                return RbacCheckResult.Error(message = msg, isPermissionDenied = isPerm)
+            }
+
+            if (genericFailure != null) {
+                return RbacCheckResult.Error(
+                    message = genericFailure.localizedMessage ?: "Unexpected network error during RBAC verification.",
+                )
+            }
+
+            RbacCheckResult.AccessDenied(
+                reason = "This account does not have an active role in Firestore RBAC. Contact the Super Admin to assign a role and Operator ID.",
+                email = userEmail,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError(e, OperationType.GET, "admins/$uid")
+            val isPerm = e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+            RbacCheckResult.Error(
+                message = e.localizedMessage ?: "Firestore RBAC check failed (${e.code.name}).",
+                isPermissionDenied = isPerm,
+            )
+        } catch (e: Exception) {
+            RbacCheckResult.Error(
+                message = e.localizedMessage ?: "Unexpected error while verifying RBAC authorization.",
+            )
+        }
     }
 
     suspend fun verifyAdminEligibility(): AdminUser? {
-        val user = auth.currentUser ?: return null
-        val doc = try {
-            db.collection("admins").document(user.uid).get().await()
-        } catch (_: Exception) {
-            null
-        }
-        if (doc != null && doc.exists()) {
-            val admin = doc.toObject(AdminUser::class.java, ServerTimestampBehavior.ESTIMATE)
-            if (admin != null) {
-                if (!admin.isActive) {
-                    // Only bootstrapped super admin cannot be permanently locked out via disabled doc
-                    if (!(user.isEmailVerified && user.email.equals(BOOTSTRAPPED_SUPER_ADMIN_EMAIL, ignoreCase = true))) {
-                        return null
-                    }
-                } else {
-                    return if (admin.operatorId.isBlank()) {
-                        admin.copy(operatorId = defaultOperatorId(admin.uid, admin.email))
-                    } else {
-                        admin
-                    }
-                }
-            }
-        }
-        // Check bootstrapped super admin email
-        if (user.isEmailVerified && user.email.equals(BOOTSTRAPPED_SUPER_ADMIN_EMAIL, ignoreCase = true)) {
-            val opId = defaultOperatorId(user.uid, user.email.orEmpty())
-            val superAdmin = AdminUser(
-                uid = user.uid,
-                email = user.email.orEmpty(),
-                displayName = user.displayName ?: "Super Admin",
-                operatorId = opId,
-                role = AdminRole.SUPER_ADMIN.name,
-                permissions = AdminRole.SUPER_ADMIN.permissions,
-                isActive = true,
-            )
-            // Ensure bootstrapped admin doc exists for role visibility
-            try {
-                db.collection("admins").document(user.uid).set(
-                    mapOf(
-                        "uid" to user.uid,
-                        "email" to superAdmin.email,
-                        "displayName" to superAdmin.displayName,
-                        "operatorId" to opId,
-                        "role" to superAdmin.role,
-                        "permissions" to superAdmin.permissions,
-                        "isActive" to true,
-                        "biometricAdminEnabled" to false,
-                        "createdAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp(),
-                    )
-                ).await()
-            } catch (_: Exception) {
-            }
-            return superAdmin
-        }
-        return null
+        return (verifyAdminEligibilityDetailed() as? RbacCheckResult.Authorized)?.admin
     }
 
     private fun hashAdminPasscode(passcode: String): String {
@@ -156,17 +338,42 @@ class AdminRepository(
         require(normalizedOpId.length >= 4) { "Operator ID must be at least 4 characters." }
         require(passcode.length >= 6) { "Admin passcode must be at least 6 characters." }
         val encodedHash = hashAdminPasscode(passcode)
-        val ref = db.collection("admins").document(admin.uid)
+        val targetDocId = admin.id.ifBlank { admin.uid }
+        val ref = db.collection("admins").document(targetDocId)
         try {
-            ref.update(
-                mapOf(
+            val existingSnap = runCatching { ref.get().await() }.getOrNull()
+            val needsSchemaBackfill = existingSnap == null ||
+                !existingSnap.exists() ||
+                existingSnap.getString("displayName").isNullOrBlank() ||
+                existingSnap.getTimestamp("createdAt") == null
+
+            if (needsSchemaBackfill) {
+                val mergePayload = mutableMapOf<String, Any>(
+                    "uid" to admin.uid.ifBlank { targetDocId },
+                    "email" to admin.email,
+                    "displayName" to admin.displayName.ifBlank { admin.email.substringBefore("@").ifBlank { "Admin Operator" } },
                     "operatorId" to normalizedOpId,
+                    "role" to admin.role.ifBlank { AdminRole.ADMIN.name },
+                    "permissions" to admin.permissions.ifEmpty { AdminRole.ADMIN.permissions },
+                    "isActive" to true,
                     "adminPinHash" to encodedHash,
                     "biometricAdminEnabled" to biometricEnabled,
                     "lastLoginAt" to FieldValue.serverTimestamp(),
+                    "createdAt" to (existingSnap?.getTimestamp("createdAt") ?: FieldValue.serverTimestamp()),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
-            ).await()
+                ref.set(mergePayload, SetOptions.merge()).await()
+            } else {
+                ref.update(
+                    mapOf(
+                        "operatorId" to normalizedOpId,
+                        "adminPinHash" to encodedHash,
+                        "biometricAdminEnabled" to biometricEnabled,
+                        "lastLoginAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp(),
+                    )
+                ).await()
+            }
             auditLogManager.captureRoleAssignment(
                 actingAdmin = admin,
                 action = "ADMIN_CREDENTIALS_ENROLLED",
@@ -176,7 +383,7 @@ class AdminRepository(
                 newState = "$normalizedOpId (biometric=$biometricEnabled)",
                 reason = "Admin unique credential enrollment / rotation",
             )
-            return ref.get().await().toObject(AdminUser::class.java, ServerTimestampBehavior.ESTIMATE)
+            return parseAdminSafely(ref.get().await())
                 ?: admin.copy(
                     operatorId = normalizedOpId,
                     adminPinHash = encodedHash,
@@ -320,7 +527,7 @@ class AdminRepository(
         emitAll(
             db.collection("users")
                 .snapshots()
-                .map { it.toObjects(UserProfile::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<UserProfile>() }
                 .catch { e ->
                     if (e is CancellationException) throw e
                     handleFirestoreError(e, OperationType.LIST, "users")
@@ -335,7 +542,7 @@ class AdminRepository(
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(250)
                 .snapshots()
-                .map { it.toObjects(TransactionRecord::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<TransactionRecord>() }
                 .catch { e ->
                     if (e is CancellationException) throw e
                     handleFirestoreError(e, OperationType.LIST, "transactions")
@@ -349,7 +556,7 @@ class AdminRepository(
             db.collection("kyc_records")
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(KycRecord::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<KycRecord>()
                         .sortedWith(
                             compareBy<KycRecord>(
                                 {
@@ -377,7 +584,7 @@ class AdminRepository(
             db.collection("support_tickets")
                 .snapshots()
                 .map { snap ->
-                    snap.toObjects(SupportTicket::class.java, ServerTimestampBehavior.ESTIMATE)
+                    snap.toObjectsSafely<SupportTicket>()
                         .sortedByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
                 }
                 .catch { e ->
@@ -394,7 +601,7 @@ class AdminRepository(
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(100)
                 .snapshots()
-                .map { it.toObjects(UserTransfer::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<UserTransfer>() }
                 .catch { e ->
                     if (e is CancellationException) throw e
                     handleFirestoreError(e, OperationType.LIST, "transfers")
@@ -407,7 +614,7 @@ class AdminRepository(
         emitAll(
             db.collection("admins")
                 .snapshots()
-                .map { it.toObjects(AdminUser::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { snap -> snap.documents.mapNotNull { parseAdminSafely(it) } }
                 .catch { e ->
                     if (e is CancellationException) throw e
                     handleFirestoreError(e, OperationType.LIST, "admins")
@@ -422,7 +629,7 @@ class AdminRepository(
         emitAll(
             db.collection("referrals")
                 .snapshots()
-                .map { it.toObjects(ReferralRecord::class.java, ServerTimestampBehavior.ESTIMATE) }
+                .map { it.toObjectsSafely<ReferralRecord>() }
                 .catch { e ->
                     if (e is CancellationException) throw e
                     handleFirestoreError(e, OperationType.LIST, "referrals")
@@ -664,7 +871,7 @@ class AdminRepository(
         try {
             val existingSnap = ref.get().await()
             val previousConfig = if (existingSnap.exists()) {
-                existingSnap.toObject(AppConfig::class.java, ServerTimestampBehavior.ESTIMATE)
+                existingSnap.toObjectSafely<AppConfig>()
             } else {
                 null
             }

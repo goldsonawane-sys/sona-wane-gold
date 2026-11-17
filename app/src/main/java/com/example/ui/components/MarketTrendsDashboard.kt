@@ -19,11 +19,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ShowChart
+import androidx.compose.material.icons.automirrored.filled.TrendingDown
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.ShowChart
-import androidx.compose.material.icons.filled.TrendingDown
-import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -36,6 +36,7 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,8 +47,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.model.DualMetalTrendSeries
 import com.example.data.model.LiveMarketRates
 import com.example.data.model.MarketPriceHistoryEntry
+import com.example.data.remote.MarketRateService
 import com.example.ui.theme.AmberOrange
 import com.example.ui.theme.DeepBlack
 import com.example.ui.theme.ElevatedObsidian
@@ -96,6 +99,91 @@ private enum class MarketTrendsLayoutMode(val label: String) {
     SILVER_ONLY("Silver Focus"),
 }
 
+data class MarketTrendChartPoint(
+    val label: String,
+    val dateStr: String,
+    val gold24kPerGram: Double,
+    val silver999PerGram: Double,
+    val timestampEpochMs: Long,
+    val source: String,
+)
+
+/**
+ * Normalizes real-time external financial API trend series (XAU/XAG + Frankfurter FX)
+ * and fallback cached history entries into aligned Gold & Silver chart points.
+ */
+object MarketTrendsApiSeriesBuilder {
+
+    fun buildUnifiedSeries(
+        externalTrend: DualMetalTrendSeries?,
+        historyEntries: List<MarketPriceHistoryEntry>,
+        liveRates: LiveMarketRates,
+        windowDays: Int,
+    ): List<MarketTrendChartPoint> {
+        val basePoints: List<MarketTrendChartPoint> = if (externalTrend != null &&
+            externalTrend.goldPoints.size >= 2 &&
+            externalTrend.silverPoints.size >= 2
+        ) {
+            val count = minOf(externalTrend.goldPoints.size, externalTrend.silverPoints.size)
+            (0 until count).map { idx ->
+                val gPt = externalTrend.goldPoints[idx]
+                val sPt = externalTrend.silverPoints[idx]
+                val cleanLabel = gPt.label.ifBlank { "#${idx + 1}" }
+                MarketTrendChartPoint(
+                    label = cleanLabel,
+                    dateStr = cleanLabel,
+                    gold24kPerGram = gPt.price,
+                    silver999PerGram = sPt.price,
+                    timestampEpochMs = idx.toLong(),
+                    source = "External Financial API (XAU/XAG + FX)",
+                )
+            }
+        } else {
+            historyEntries.sortedBy { it.timestampEpochMs }.map { entry ->
+                MarketTrendChartPoint(
+                    label = entry.label.ifBlank { entry.dateStr.takeLast(5) },
+                    dateStr = entry.dateStr,
+                    gold24kPerGram = entry.gold24kPerGram,
+                    silver999PerGram = entry.silver999PerGram,
+                    timestampEpochMs = entry.timestampEpochMs,
+                    source = entry.source.ifBlank { "Cached Market Snapshot" },
+                )
+            }
+        }
+
+        if (basePoints.isEmpty()) return emptyList()
+
+        // Anchor tail to the freshest live external financial API spot tick when available
+        val merged = if (liveRates.gold24kBuyPerGram > 0.0 && liveRates.silver999BuyPerGram > 0.0) {
+            val mutable = basePoints.toMutableList()
+            val last = mutable.last()
+            if (last.label.startsWith("LIVE", ignoreCase = true)) {
+                mutable[mutable.lastIndex] = last.copy(
+                    gold24kPerGram = liveRates.gold24kBuyPerGram,
+                    silver999PerGram = liveRates.silver999BuyPerGram,
+                    source = liveRates.sourceName.ifBlank { last.source },
+                )
+            } else {
+                mutable.add(
+                    MarketTrendChartPoint(
+                        label = "LIVE",
+                        dateStr = "LIVE Spot",
+                        gold24kPerGram = liveRates.gold24kBuyPerGram,
+                        silver999PerGram = liveRates.silver999BuyPerGram,
+                        timestampEpochMs = liveRates.lastUpdatedEpochMs.coerceAtLeast(last.timestampEpochMs + 1L),
+                        source = liveRates.sourceName.ifBlank { "External Financial API" },
+                    )
+                )
+            }
+            mutable
+        } else {
+            basePoints
+        }
+
+        return if (merged.size > windowDays) merged.takeLast(windowDays) else merged
+    }
+}
+
 private val HistoryLabelsKey = ExtraStore.Key<List<String>>()
 private val HistoryDatesKey = ExtraStore.Key<List<String>>()
 private val HistoryGoldKey = ExtraStore.Key<List<Double>>()
@@ -109,34 +197,100 @@ fun MarketTrendsDashboard(
     errorMessage: String? = null,
     onSyncHistory: () -> Unit,
     modifier: Modifier = Modifier,
+    externalTrendSeries: DualMetalTrendSeries? = null,
+    marketRateService: MarketRateService? = null,
+    autoFetchExternalApi: Boolean = true,
+    onRefreshExternalRates: (() -> Unit)? = null,
 ) {
     var layoutMode by remember { mutableStateOf(MarketTrendsLayoutMode.SPLIT) }
-    var windowDays by remember { mutableStateOf(30) }
+    var windowDays by remember { mutableIntStateOf(30) }
+    var refreshNonce by remember { mutableIntStateOf(0) }
 
-    val slicedHistory = remember(historyEntries, windowDays) {
-        val sorted = historyEntries.sortedBy { it.timestampEpochMs }
-        if (sorted.size > windowDays) sorted.takeLast(windowDays) else sorted
+    var fetchedApiRates by remember { mutableStateOf<LiveMarketRates?>(null) }
+    var fetchedApiTrend by remember { mutableStateOf<DualMetalTrendSeries?>(null) }
+    var apiLoading by remember { mutableStateOf(false) }
+    var apiError by remember { mutableStateOf<String?>(null) }
+
+    val rangeKey = when (windowDays) {
+        7 -> "1W"
+        14 -> "14D"
+        30 -> "30D"
+        else -> "3M"
+    }
+
+    val serviceInstance = remember(marketRateService, autoFetchExternalApi) {
+        marketRateService ?: if (autoFetchExternalApi) MarketRateService() else null
+    }
+
+    // Fetch real-time Gold & Silver spot rates and trend curves from external financial APIs
+    LaunchedEffect(autoFetchExternalApi, externalTrendSeries, rangeKey, refreshNonce) {
+        if (!autoFetchExternalApi || externalTrendSeries != null || serviceInstance == null) return@LaunchedEffect
+        apiLoading = true
+        apiError = null
+        try {
+            val latestRates = if (refreshNonce > 0 || !rates.isLive || rates.gold24kBuyPerGram <= 0.0) {
+                serviceInstance.fetchLiveRates()
+            } else {
+                rates
+            }
+            if (latestRates.isLive && latestRates.gold24kBuyPerGram > 0.0 && latestRates.silver999BuyPerGram > 0.0) {
+                fetchedApiRates = latestRates
+                val series = serviceInstance.fetchDualMetalTrend(
+                    goldCurrentPerGram = latestRates.gold24kBuyPerGram,
+                    silverCurrentPerGram = latestRates.silver999BuyPerGram,
+                    rangeKey = rangeKey,
+                )
+                if (series.goldPoints.size >= 2 && series.silverPoints.size >= 2) {
+                    fetchedApiTrend = series
+                } else {
+                    apiError = "External trend curve temporarily unavailable; showing cached snapshots."
+                }
+            } else if (!latestRates.errorMessage.isNullOrBlank()) {
+                apiError = latestRates.errorMessage
+            }
+        } catch (e: Exception) {
+            apiError = e.localizedMessage ?: "External financial API unreachable"
+        } finally {
+            apiLoading = false
+        }
+    }
+
+    val effectiveRates = remember(rates, fetchedApiRates) {
+        fetchedApiRates?.takeIf { it.isLive && it.gold24kBuyPerGram > 0.0 } ?: rates
+    }
+    val activeTrend = externalTrendSeries ?: fetchedApiTrend
+    val slicedPoints = remember(activeTrend, historyEntries, effectiveRates, windowDays) {
+        MarketTrendsApiSeriesBuilder.buildUnifiedSeries(
+            externalTrend = activeTrend,
+            historyEntries = historyEntries,
+            liveRates = effectiveRates,
+            windowDays = windowDays,
+        )
     }
 
     val goldProducer = remember { CartesianChartModelProducer() }
     val silverProducer = remember { CartesianChartModelProducer() }
     val compareProducer = remember { CartesianChartModelProducer() }
 
-    val hasSeries = slicedHistory.size >= 2
+    val hasSeries = slicedPoints.size >= 2
+    val usingExternalApi = (activeTrend != null && activeTrend.goldPoints.size >= 2) || effectiveRates.isLive
 
-    val goldStats = remember(slicedHistory) {
-        computeMetalWindowStats(slicedHistory.map { it.gold24kPerGram })
+    val goldStats = remember(slicedPoints) {
+        computeMetalWindowStats(slicedPoints.map { it.gold24kPerGram })
     }
-    val silverStats = remember(slicedHistory) {
-        computeMetalWindowStats(slicedHistory.map { it.silver999PerGram })
+    val silverStats = remember(slicedPoints) {
+        computeMetalWindowStats(slicedPoints.map { it.silver999PerGram })
     }
 
-    LaunchedEffect(slicedHistory, layoutMode) {
-        if (slicedHistory.size < 2) return@LaunchedEffect
-        val labels = slicedHistory.map { it.label.ifBlank { it.dateStr.takeLast(5) } }
-        val dates = slicedHistory.map { it.dateStr }
-        val goldPrices = slicedHistory.map { it.gold24kPerGram }
-        val silverPrices = slicedHistory.map { it.silver999PerGram }
+    val effectiveLoading = isLoading || apiLoading
+    val combinedError = apiError?.takeIf { !hasSeries } ?: errorMessage
+
+    LaunchedEffect(slicedPoints, layoutMode) {
+        if (slicedPoints.size < 2) return@LaunchedEffect
+        val labels = slicedPoints.map { it.label }
+        val dates = slicedPoints.map { it.dateStr }
+        val goldPrices = slicedPoints.map { it.gold24kPerGram }
+        val silverPrices = slicedPoints.map { it.silver999PerGram }
 
         if (layoutMode == MarketTrendsLayoutMode.SPLIT || layoutMode == MarketTrendsLayoutMode.GOLD_ONLY) {
             goldProducer.runTransaction {
@@ -189,27 +343,30 @@ fun MarketTrendsDashboard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.ShowChart, contentDescription = null, tint = RoyalGold)
+                Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null, tint = RoyalGold)
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
-                        text = "${windowDays}-Day Firestore Price Trends",
+                        text = "${windowDays}-Day Gold & Silver Trends",
                         style = MaterialTheme.typography.titleMedium,
                         color = LightGold,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.Default.CloudDone,
-                            contentDescription = "Firestore historical feed",
-                            tint = if (hasSeries) SuccessGreen else SecondarySilver,
+                            contentDescription = "External financial API feed",
+                            tint = if (usingExternalApi) SuccessGreen else SecondarySilver,
                             modifier = Modifier.size(13.dp),
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (hasSeries) {
-                                "Firestore • ${slicedHistory.size} daily snapshots"
-                            } else {
-                                "Firestore • Syncing market_price_history"
+                            text = when {
+                                usingExternalApi && hasSeries ->
+                                    "External Financial API • ${slicedPoints.size} pts (XAU/XAG + FX)"
+                                hasSeries ->
+                                    "Cached Snapshot • ${slicedPoints.size} pts"
+                                else ->
+                                    "External Financial API • Fetching live trends"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = SecondarySilver,
@@ -219,20 +376,64 @@ fun MarketTrendsDashboard(
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusPill(
-                    text = if (rates.isLive) "LIVE + 30D" else "${windowDays}D DB",
-                    color = if (rates.isLive) SuccessGreen else AmberOrange,
+                    text = if (effectiveRates.isLive) "LIVE API" else "${windowDays}D FEED",
+                    color = if (effectiveRates.isLive) SuccessGreen else AmberOrange,
                 )
                 IconButton(
-                    onClick = onSyncHistory,
+                    onClick = {
+                        refreshNonce += 1
+                        onRefreshExternalRates?.invoke()
+                        onSyncHistory()
+                    },
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .testTag("market_trends_sync_btn"),
                 ) {
                     Icon(
                         Icons.Default.Refresh,
-                        contentDescription = "Sync 30-day Firestore price history",
+                        contentDescription = "Refresh real-time financial API trends",
                         tint = RoyalGold,
                     )
+                }
+            }
+        }
+
+        // Live Spot Summary Ticker Strip from External Financial API
+        if (effectiveRates.gold24kBuyPerGram > 0.0 || effectiveRates.silver999BuyPerGram > 0.0) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = ElevatedObsidian,
+                    border = BorderStroke(1.dp, RoyalGold.copy(alpha = 0.35f)),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Text("24K Gold Spot", style = MaterialTheme.typography.labelSmall, color = SecondarySilver)
+                        Text(
+                            text = "${Formatters.formatInr(effectiveRates.gold24kBuyPerGram)}/g",
+                            style = MonoSmallStyle,
+                            color = LightGold,
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = ElevatedObsidian,
+                    border = BorderStroke(1.dp, SilverAccent.copy(alpha = 0.35f)),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Text("999 Silver Spot", style = MaterialTheme.typography.labelSmall, color = SecondarySilver)
+                        Text(
+                            text = "${Formatters.formatInr(effectiveRates.silver999BuyPerGram)}/g",
+                            style = MonoSmallStyle,
+                            color = SilverAccent,
+                        )
+                    }
                 }
             }
         }
@@ -265,14 +466,14 @@ fun MarketTrendsDashboard(
             }
         }
 
-        // Timeframe slice chips (7D, 14D, 30D)
+        // Timeframe slice chips (7D, 14D, 30D, 90D)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            listOf(7 to "7D", 14 to "14D", 30 to "30D").forEach { (days, label) ->
+            listOf(7 to "7D", 14 to "14D", 30 to "30D", 90 to "90D").forEach { (days, label) ->
                 FilterChip(
                     selected = windowDays == days,
                     onClick = { windowDays = days },
@@ -282,7 +483,7 @@ fun MarketTrendsDashboard(
             }
         }
 
-        AnimatedVisibility(visible = !errorMessage.isNullOrBlank()) {
+        AnimatedVisibility(visible = !combinedError.isNullOrBlank()) {
             Surface(
                 color = ErrorRed.copy(alpha = 0.14f),
                 border = BorderStroke(1.dp, ErrorRed),
@@ -297,14 +498,18 @@ fun MarketTrendsDashboard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = errorMessage.orEmpty(),
+                        text = combinedError.orEmpty(),
                         style = MaterialTheme.typography.bodySmall,
                         color = ErrorRed,
                         modifier = Modifier.weight(1f),
                     )
                     GoldOutlinedButton(
                         text = "Retry",
-                        onClick = onSyncHistory,
+                        onClick = {
+                            refreshNonce += 1
+                            onRefreshExternalRates?.invoke()
+                            onSyncHistory()
+                        },
                     )
                 }
             }
@@ -327,28 +532,32 @@ fun MarketTrendsDashboard(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    if (isLoading) {
+                    if (effectiveLoading) {
                         CircularProgressIndicator(color = RoyalGold, modifier = Modifier.size(28.dp))
                         Text(
-                            text = "Fetching 30-day Gold & Silver history from Firestore...",
+                            text = "Fetching live Gold & Silver trends from financial API...",
                             style = MaterialTheme.typography.bodySmall,
                             color = SecondarySilver,
                         )
                     } else {
                         Icon(
-                            Icons.Default.ShowChart,
-                            contentDescription = "No price history yet",
+                            Icons.AutoMirrored.Filled.ShowChart,
+                            contentDescription = "No price trend data yet",
                             tint = RoyalGold,
                             modifier = Modifier.size(34.dp),
                         )
                         Text(
-                            text = "No historical snapshots cached in Firestore yet.",
+                            text = "External price trend feed not loaded yet.",
                             style = MaterialTheme.typography.bodySmall,
                             color = SecondarySilver,
                         )
                         GoldOutlinedButton(
-                            text = "Sync 30-Day History",
-                            onClick = onSyncHistory,
+                            text = "Fetch Live Market Trends",
+                            onClick = {
+                                refreshNonce += 1
+                                onRefreshExternalRates?.invoke()
+                                onSyncHistory()
+                            },
                         )
                     }
                 }
@@ -357,7 +566,7 @@ fun MarketTrendsDashboard(
             when (layoutMode) {
                 MarketTrendsLayoutMode.SPLIT -> {
                     SingleMetalVicoGraphCard(
-                        title = "Gold 24K • ${windowDays}-Day History (₹/g)",
+                        title = "Gold 24K • ${windowDays}-Day Trend (₹/g)",
                         lineColor = RoyalGold,
                         stats = goldStats,
                         unitPrefix = "₹",
@@ -368,7 +577,7 @@ fun MarketTrendsDashboard(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     SingleMetalVicoGraphCard(
-                        title = "Silver 999 • ${windowDays}-Day History (₹/g)",
+                        title = "Silver 999 • ${windowDays}-Day Trend (₹/g)",
                         lineColor = SilverAccent,
                         stats = silverStats,
                         unitPrefix = "₹",
@@ -381,7 +590,7 @@ fun MarketTrendsDashboard(
 
                 MarketTrendsLayoutMode.GOLD_ONLY -> {
                     SingleMetalVicoGraphCard(
-                        title = "Gold 24K • ${windowDays}-Day History (₹/g)",
+                        title = "Gold 24K • ${windowDays}-Day Trend (₹/g)",
                         lineColor = RoyalGold,
                         stats = goldStats,
                         unitPrefix = "₹",
@@ -395,7 +604,7 @@ fun MarketTrendsDashboard(
 
                 MarketTrendsLayoutMode.SILVER_ONLY -> {
                     SingleMetalVicoGraphCard(
-                        title = "Silver 999 • ${windowDays}-Day History (₹/g)",
+                        title = "Silver 999 • ${windowDays}-Day Trend (₹/g)",
                         lineColor = SilverAccent,
                         stats = silverStats,
                         unitPrefix = "₹",
@@ -409,7 +618,7 @@ fun MarketTrendsDashboard(
 
                 MarketTrendsLayoutMode.COMPARE -> {
                     CompareNormalizedVicoCard(
-                        historyEntries = slicedHistory,
+                        points = slicedPoints,
                         goldChangePct = goldStats.changePct,
                         silverChangePct = silverStats.changePct,
                         modelProducer = compareProducer,
@@ -621,16 +830,16 @@ private fun SingleMetalVicoGraphCard(
 
 @Composable
 private fun CompareNormalizedVicoCard(
-    historyEntries: List<MarketPriceHistoryEntry>,
+    points: List<MarketTrendChartPoint>,
     goldChangePct: Double,
     silverChangePct: Double,
     modelProducer: CartesianChartModelProducer,
 ) {
-    val minMax = remember(historyEntries) {
-        val gBase = historyEntries.firstOrNull()?.gold24kPerGram?.takeIf { it > 0.0 } ?: 1.0
-        val sBase = historyEntries.firstOrNull()?.silver999PerGram?.takeIf { it > 0.0 } ?: 1.0
-        val combined = historyEntries.map { ((it.gold24kPerGram - gBase) / gBase) * 100.0 } +
-            historyEntries.map { ((it.silver999PerGram - sBase) / sBase) * 100.0 }
+    val minMax = remember(points) {
+        val gBase = points.firstOrNull()?.gold24kPerGram?.takeIf { it > 0.0 } ?: 1.0
+        val sBase = points.firstOrNull()?.silver999PerGram?.takeIf { it > 0.0 } ?: 1.0
+        val combined = points.map { ((it.gold24kPerGram - gBase) / gBase) * 100.0 } +
+            points.map { ((it.silver999PerGram - sBase) / sBase) * 100.0 }
         val lo = (combined.minOrNull() ?: -2.0) - 0.5
         val hi = (combined.maxOrNull() ?: 2.0) + 0.5
         lo to hi
@@ -772,7 +981,7 @@ private fun CompareLegendItem(
         Text(label, style = MaterialTheme.typography.labelMedium, color = PureWhite)
         Spacer(modifier = Modifier.width(4.dp))
         Icon(
-            imageVector = if (positive) Icons.Default.TrendingUp else Icons.Default.TrendingDown,
+            imageVector = if (positive) Icons.AutoMirrored.Filled.TrendingUp else Icons.AutoMirrored.Filled.TrendingDown,
             contentDescription = null,
             tint = if (positive) SuccessGreen else ErrorRed,
             modifier = Modifier.size(14.dp),

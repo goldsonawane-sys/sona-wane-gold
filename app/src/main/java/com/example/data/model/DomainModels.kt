@@ -164,7 +164,7 @@ data class TransactionRecord(
         "idempotencyKey" to idempotencyKey,
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp(),
-    ).filterValues { it != null }.mapValues { it.value!! }
+    ).entries.mapNotNull { (key, value) -> value?.let { key to it } }.toMap()
 }
 
 @IgnoreExtraProperties

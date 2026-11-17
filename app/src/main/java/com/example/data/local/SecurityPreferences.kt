@@ -9,8 +9,23 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+import org.json.JSONObject
 
 private val Context.dataStore by preferencesDataStore(name = "sonawane_prefs")
+
+data class PriceAlertTarget(
+    val id: String,
+    val metal: String = "GOLD_24K",
+    val targetPriceInr: Double = 0.0,
+    val direction: String = "BELOW",
+    val frequency: String = "ONCE",
+    val enabled: Boolean = true,
+    val notes: String = "",
+    val lastObservedPrice: Double = 0.0,
+    val lastNotifiedEpochMs: Long = 0L,
+    val triggerCount: Int = 0,
+)
 
 data class GoldDropInAppAlert(
     val purity: String = "GOLD_24K",
@@ -29,6 +44,12 @@ data class BgDropMonitorState(
     val lastNotifiedEpochMs: Long = 0L,
     val lastStatus: String = "IDLE",
     val pendingInAppAlert: GoldDropInAppAlert? = null,
+)
+
+data class PriceAlertWorkerConfig(
+    val intervalMinutes: Long = 15L,
+    val preferFirestoreRates: Boolean = true,
+    val masterAlertsEnabled: Boolean = true,
 )
 
 class SecurityPreferences(private val context: Context) {
@@ -63,6 +84,10 @@ class SecurityPreferences(private val context: Context) {
         val BG_DROP_IN_APP_PURITY = stringPreferencesKey("bg_drop_in_app_purity")
         val BG_DROP_IN_APP_TIME_MS = longPreferencesKey("bg_drop_in_app_time_ms")
         val BG_DROP_IN_APP_MESSAGE = stringPreferencesKey("bg_drop_in_app_message")
+        val PRICE_ALERT_TARGETS_JSON = stringPreferencesKey("price_alert_targets_json")
+        val WORKER_INTERVAL_MINUTES = longPreferencesKey("worker_interval_minutes")
+        val WORKER_PREFER_FIRESTORE = booleanPreferencesKey("worker_prefer_firestore")
+        val WORKER_MASTER_ENABLED = booleanPreferencesKey("worker_master_enabled")
     }
 
     val onboardingSeen: Flow<Boolean> = context.dataStore.data.map { it[Keys.ONBOARDING_SEEN] ?: false }
@@ -101,6 +126,18 @@ class SecurityPreferences(private val context: Context) {
             lastNotifiedEpochMs = prefs[Keys.BG_DROP_LAST_NOTIFIED_MS] ?: 0L,
             lastStatus = prefs[Keys.BG_DROP_LAST_STATUS] ?: "IDLE",
             pendingInAppAlert = inAppAlert,
+        )
+    }
+
+    val priceAlertTargetsFlow: Flow<List<PriceAlertTarget>> = context.dataStore.data.map { prefs ->
+        decodePriceAlertTargets(prefs[Keys.PRICE_ALERT_TARGETS_JSON].orEmpty())
+    }
+
+    val priceAlertWorkerConfigFlow: Flow<PriceAlertWorkerConfig> = context.dataStore.data.map { prefs ->
+        PriceAlertWorkerConfig(
+            intervalMinutes = (prefs[Keys.WORKER_INTERVAL_MINUTES] ?: 15L).coerceAtLeast(15L),
+            preferFirestoreRates = prefs[Keys.WORKER_PREFER_FIRESTORE] ?: true,
+            masterAlertsEnabled = prefs[Keys.WORKER_MASTER_ENABLED] ?: true,
         )
     }
 
@@ -179,6 +216,53 @@ class SecurityPreferences(private val context: Context) {
     suspend fun dismissPendingDropAlert() {
         context.dataStore.edit { prefs ->
             prefs[Keys.BG_DROP_IN_APP_PENDING] = false
+        }
+    }
+
+    suspend fun savePriceAlertTargets(targets: List<PriceAlertTarget>) {
+        val encoded = encodePriceAlertTargets(targets)
+        context.dataStore.edit { prefs ->
+            prefs[Keys.PRICE_ALERT_TARGETS_JSON] = encoded
+        }
+    }
+
+    suspend fun upsertPriceAlertTarget(target: PriceAlertTarget): List<PriceAlertTarget> {
+        var updatedList: List<PriceAlertTarget> = emptyList()
+        context.dataStore.edit { prefs ->
+            val current = decodePriceAlertTargets(prefs[Keys.PRICE_ALERT_TARGETS_JSON].orEmpty()).toMutableList()
+            val idx = current.indexOfFirst { it.id == target.id }
+            if (idx >= 0) {
+                current[idx] = target
+            } else {
+                current.add(0, target)
+            }
+            updatedList = current
+            prefs[Keys.PRICE_ALERT_TARGETS_JSON] = encodePriceAlertTargets(current)
+        }
+        return updatedList
+    }
+
+    suspend fun removePriceAlertTarget(targetId: String): List<PriceAlertTarget> {
+        var updatedList: List<PriceAlertTarget> = emptyList()
+        context.dataStore.edit { prefs ->
+            val filtered = decodePriceAlertTargets(prefs[Keys.PRICE_ALERT_TARGETS_JSON].orEmpty())
+                .filterNot { it.id == targetId }
+            updatedList = filtered
+            prefs[Keys.PRICE_ALERT_TARGETS_JSON] = encodePriceAlertTargets(filtered)
+        }
+        return updatedList
+    }
+
+    suspend fun setPriceAlertWorkerConfig(
+        intervalMinutes: Long,
+        preferFirestoreRates: Boolean,
+        masterAlertsEnabled: Boolean,
+    ) {
+        val safeInterval = intervalMinutes.coerceAtLeast(15L)
+        context.dataStore.edit { prefs ->
+            prefs[Keys.WORKER_INTERVAL_MINUTES] = safeInterval
+            prefs[Keys.WORKER_PREFER_FIRESTORE] = preferFirestoreRates
+            prefs[Keys.WORKER_MASTER_ENABLED] = masterAlertsEnabled
         }
     }
 
@@ -267,5 +351,48 @@ class SecurityPreferences(private val context: Context) {
         val s = prefs[Keys.CACHED_SILVER_999]?.toDoubleOrNull() ?: 0.0
         val t = prefs[Keys.CACHED_RATE_TIME] ?: 0L
         Triple(g, s, t)
+    }
+
+    private fun encodePriceAlertTargets(targets: List<PriceAlertTarget>): String {
+        val arr = JSONArray()
+        targets.forEach { t ->
+            val obj = JSONObject().apply {
+                put("id", t.id)
+                put("metal", t.metal)
+                put("targetPriceInr", t.targetPriceInr)
+                put("direction", t.direction)
+                put("frequency", t.frequency)
+                put("enabled", t.enabled)
+                put("notes", t.notes)
+                put("lastObservedPrice", t.lastObservedPrice)
+                put("lastNotifiedEpochMs", t.lastNotifiedEpochMs)
+                put("triggerCount", t.triggerCount)
+            }
+            arr.put(obj)
+        }
+        return arr.toString()
+    }
+
+    private fun decodePriceAlertTargets(json: String): List<PriceAlertTarget> {
+        if (json.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = obj.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                PriceAlertTarget(
+                    id = id,
+                    metal = obj.optString("metal", "GOLD_24K"),
+                    targetPriceInr = obj.optDouble("targetPriceInr", 0.0),
+                    direction = obj.optString("direction", "BELOW"),
+                    frequency = obj.optString("frequency", "ONCE"),
+                    enabled = obj.optBoolean("enabled", true),
+                    notes = obj.optString("notes", ""),
+                    lastObservedPrice = obj.optDouble("lastObservedPrice", 0.0),
+                    lastNotifiedEpochMs = obj.optLong("lastNotifiedEpochMs", 0L),
+                    triggerCount = obj.optInt("triggerCount", 0),
+                )
+            }
+        }.getOrDefault(emptyList())
     }
 }

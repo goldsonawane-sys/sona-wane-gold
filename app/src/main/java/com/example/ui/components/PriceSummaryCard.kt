@@ -77,8 +77,8 @@ import com.example.ui.theme.PureWhite
 import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.SecondarySilver
 import com.example.ui.theme.SuccessGreen
+import com.example.data.repository.FirestoreService
 import com.example.util.Formatters
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.catch
@@ -110,7 +110,7 @@ fun PriceSummaryCard(
     val context = LocalContext.current
     val appContext = context.applicationContext
     val scope = rememberCoroutineScope()
-    val currentUid = FirebaseAuth.getInstance().currentUser?.uid
+    val currentUid = remember(appContext) { FirestoreService.currentUserOrNull(appContext)?.uid }
     val repository = remember(currentUid) {
         if (currentUid != null) SonaWaneRepository(appContext) else null
     }
@@ -186,20 +186,17 @@ fun PriceSummaryCard(
 
     val resolved24k = when {
         goldSummary.gold24kPerGram > 0.0 -> goldSummary.gold24kPerGram
-        (fallbackRates?.gold24kBuyPerGram ?: 0.0) > 0.0 -> fallbackRates!!.gold24kBuyPerGram
-        else -> 0.0
+        else -> fallbackRates?.gold24kBuyPerGram?.takeIf { it > 0.0 } ?: 0.0
     }
     val resolved22k = when {
         goldSummary.gold22kPerGram > 0.0 -> goldSummary.gold22kPerGram
-        (fallbackRates?.gold22kBuyPerGram ?: 0.0) > 0.0 -> fallbackRates!!.gold22kBuyPerGram
-        resolved24k > 0.0 -> resolved24k * (22.0 / 24.0)
-        else -> 0.0
+        else -> fallbackRates?.gold22kBuyPerGram?.takeIf { it > 0.0 }
+            ?: if (resolved24k > 0.0) resolved24k * (22.0 / 24.0) else 0.0
     }
     val resolved18k = when {
         goldSummary.gold18kPerGram > 0.0 -> goldSummary.gold18kPerGram
-        (fallbackRates?.gold18kBuyPerGram ?: 0.0) > 0.0 -> fallbackRates!!.gold18kBuyPerGram
-        resolved24k > 0.0 -> resolved24k * (18.0 / 24.0)
-        else -> 0.0
+        else -> fallbackRates?.gold18kBuyPerGram?.takeIf { it > 0.0 }
+            ?: if (resolved24k > 0.0) resolved24k * (18.0 / 24.0) else 0.0
     }
 
     val hasRates = resolved24k > 0.0
@@ -215,7 +212,7 @@ fun PriceSummaryCard(
     }
     val resolvedSource = when {
         goldSummary.isFromFirestore -> "Firestore (${goldSummary.dateStr.ifBlank { "latest" }})"
-        !fallbackRates?.sourceName.isNullOrBlank() && hasRates -> fallbackRates!!.sourceName
+        hasRates && !fallbackRates?.sourceName.isNullOrBlank() -> fallbackRates?.sourceName.orEmpty()
         else -> goldSummary.source
     }
 

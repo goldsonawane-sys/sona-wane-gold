@@ -733,8 +733,7 @@ fun AdminControlPanelScreen(
         }
     }
 
-    if (userActionTarget != null) {
-        val (target, newStatus) = userActionTarget!!
+    userActionTarget?.let { (target, newStatus) ->
         AlertDialog(
             onDismissRequest = { userActionTarget = null },
             title = { Text("Mark ${target.fullName} as $newStatus?") },
@@ -759,8 +758,7 @@ fun AdminControlPanelScreen(
         )
     }
 
-    if (payoutTarget != null) {
-        val (tx, approve) = payoutTarget!!
+    payoutTarget?.let { (tx, approve) ->
         AlertDialog(
             onDismissRequest = { payoutTarget = null },
             title = { Text(if (approve) "Confirm Payout (${tx.txCode})" else "Reverse Withdrawal (${tx.txCode})") },
@@ -795,8 +793,7 @@ fun AdminControlPanelScreen(
         )
     }
 
-    if (ticketTarget != null) {
-        val current = ticketTarget!!
+    ticketTarget?.let { current ->
         AlertDialog(
             onDismissRequest = { ticketTarget = null },
             title = { Text("Ticket ${current.ticketCode}") },
@@ -1344,8 +1341,7 @@ private fun RbacManagerCard(
         }
     }
 
-    if (resetTarget != null) {
-        val target = resetTarget!!
+    resetTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { resetTarget = null },
             title = { Text("Reset Admin Credentials") },
@@ -1382,8 +1378,7 @@ private fun RbacManagerCard(
         )
     }
 
-    if (revokeTarget != null) {
-        val target = revokeTarget!!
+    revokeTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { revokeTarget = null },
             title = { Text("Revoke Admin Access?") },

@@ -105,6 +105,7 @@ fun SettingsScreen(
     onChangeMpin: () -> Unit,
     onLockVaultNow: () -> Unit,
     onOpenPriceAlerts: () -> Unit,
+    onOpenBiometricAuth: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -268,6 +269,15 @@ fun SettingsScreen(
                         style = MonoSmallStyle,
                         color = LightGold,
                         modifier = Modifier.testTag("settings_datastore_status_text"),
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    GoldOutlinedButton(
+                        text = "Open Biometric Security Shield",
+                        icon = Icons.Default.Fingerprint,
+                        onClick = onOpenBiometricAuth,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_open_biometric_screen_btn"),
                     )
                 }
             }
@@ -589,9 +599,9 @@ private fun GoldPriceDropMonitorSettingsCard(
                 .testTag("settings_gold_monitor_threshold_input"),
         )
 
-        if (!validationError.isNullOrBlank()) {
+        validationError?.takeIf { it.isNotBlank() }?.let { errText ->
             Spacer(modifier = Modifier.height(4.dp))
-            Text(validationError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+            Text(errText, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotifPermission) {

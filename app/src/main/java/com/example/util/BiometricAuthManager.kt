@@ -1,6 +1,7 @@
 package com.example.util
 
 import android.content.Context
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.biometric.BiometricManager
@@ -24,6 +25,7 @@ object BiometricAuthManager {
 
     private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
     private const val KEY_ALIAS = "sonawane_biometric_vault_key"
+    const val DEFAULT_BACKGROUND_LOCK_GRACE_MS = 15_000L
 
     fun checkCapability(context: Context): BiometricCapability {
         val manager = BiometricManager.from(context)
@@ -38,6 +40,26 @@ object BiometricAuthManager {
             BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> BiometricCapability.NO_HARDWARE
             else -> BiometricCapability.UNAVAILABLE
         }
+    }
+
+    fun hasDeviceCredentialFallback(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val manager = BiometricManager.from(context)
+        return manager.canAuthenticate(BiometricManager.Authenticators.DEVICE_CREDENTIAL) ==
+            BiometricManager.BIOMETRIC_SUCCESS
+    }
+
+    fun shouldAutoLockAfterBackground(
+        requiresAppLock: Boolean,
+        isCurrentlyUnlocked: Boolean,
+        lastBackgroundedAtMs: Long,
+        resumedAtMs: Long,
+        biometricPromptInFlight: Boolean,
+        gracePeriodMs: Long = DEFAULT_BACKGROUND_LOCK_GRACE_MS,
+    ): Boolean {
+        if (!requiresAppLock || !isCurrentlyUnlocked || biometricPromptInFlight) return false
+        if (lastBackgroundedAtMs <= 0L || resumedAtMs <= lastBackgroundedAtMs) return false
+        return (resumedAtMs - lastBackgroundedAtMs) >= gracePeriodMs
     }
 
     private fun getOrCreateKey(): SecretKey {
@@ -82,17 +104,26 @@ object BiometricAuthManager {
         title: String,
         subtitle: String,
         negativeButtonText: String = "Use MPIN",
+        allowDeviceCredentialFallback: Boolean = false,
+        forceDeviceCredential: Boolean = false,
         onSuccess: () -> Unit,
         onError: (String) -> Unit,
+        onCancel: () -> Unit = {},
     ) {
         val cap = checkCapability(activity)
-        if (!cap.isUsable) {
+        val canUseDeviceCred = (allowDeviceCredentialFallback || forceDeviceCredential) && hasDeviceCredentialFallback(activity)
+        if (!cap.isUsable && !canUseDeviceCred) {
             onError(cap.label)
             return
         }
 
         val executor = ContextCompat.getMainExecutor(activity)
-        val cryptoObject = if (cap == BiometricCapability.STRONG_READY) createCryptoObject() else null
+        val useDeviceCred = canUseDeviceCred && (forceDeviceCredential || !cap.isUsable)
+        val cryptoObject = if (!useDeviceCred && cap == BiometricCapability.STRONG_READY) {
+            createCryptoObject()
+        } else {
+            null
+        }
 
         val prompt = BiometricPrompt(
             activity,
@@ -104,7 +135,7 @@ object BiometricAuthManager {
                         try {
                             authenticatedCipher.doFinal("sonawane-vault-auth".toByteArray(Charsets.UTF_8))
                         } catch (_: Exception) {
-                            onError("Biometric cryptographic verification failed. Please use your MPIN.")
+                            onError("Biometric cryptographic verification failed. Please retry or use fallback.")
                             return
                         }
                     }
@@ -112,10 +143,15 @@ object BiometricAuthManager {
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    if (errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON &&
-                        errorCode != BiometricPrompt.ERROR_USER_CANCELED
-                    ) {
-                        onError(errString.toString())
+                    when (errorCode) {
+                        BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+                        BiometricPrompt.ERROR_USER_CANCELED,
+                        BiometricPrompt.ERROR_CANCELED -> onCancel()
+                        BiometricPrompt.ERROR_LOCKOUT ->
+                            onError("Biometric sensor temporarily locked after too many attempts. Wait 30s or use fallback.")
+                        BiometricPrompt.ERROR_LOCKOUT_PERMANENT ->
+                            onError("Biometric sensor locked by Android. Unlock your device with PIN/Pattern or use MPIN.")
+                        else -> onError(errString.toString())
                     }
                 }
 
@@ -125,20 +161,29 @@ object BiometricAuthManager {
             },
         )
 
-        val authenticators = if (cryptoObject != null) {
-            BiometricManager.Authenticators.BIOMETRIC_STRONG
-        } else {
-            BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
-        }
-
-        val info = BiometricPrompt.PromptInfo.Builder()
+        val infoBuilder = BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
             .setSubtitle(subtitle)
-            .setNegativeButtonText(negativeButtonText)
-            .setAllowedAuthenticators(authenticators)
             .setConfirmationRequired(true)
-            .build()
 
+        if (useDeviceCred && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            infoBuilder.setAllowedAuthenticators(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            )
+        } else {
+            val authenticators = if (cryptoObject != null) {
+                BiometricManager.Authenticators.BIOMETRIC_STRONG
+            } else {
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
+            }
+            infoBuilder
+                .setNegativeButtonText(negativeButtonText)
+                .setAllowedAuthenticators(authenticators)
+        }
+
+        val info = infoBuilder.build()
         if (cryptoObject != null) {
             prompt.authenticate(info, cryptoObject)
         } else {

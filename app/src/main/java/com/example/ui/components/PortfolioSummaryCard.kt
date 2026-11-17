@@ -67,8 +67,8 @@ import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.SecondarySilver
 import com.example.ui.theme.SilverAccent
 import com.example.ui.theme.SuccessGreen
+import com.example.data.repository.FirestoreService
 import com.example.util.Formatters
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.catch
@@ -104,20 +104,17 @@ object PortfolioValuationCalculator {
         val w = wallet ?: WalletHoldings()
         val r24 = when {
             firestoreSummary.gold24kPerGram > 0.0 -> firestoreSummary.gold24kPerGram
-            (fallbackRates?.gold24kBuyPerGram ?: 0.0) > 0.0 -> fallbackRates!!.gold24kBuyPerGram
-            else -> 0.0
+            else -> fallbackRates?.gold24kBuyPerGram?.takeIf { it > 0.0 } ?: 0.0
         }
         val r22 = when {
             firestoreSummary.gold22kPerGram > 0.0 -> firestoreSummary.gold22kPerGram
-            (fallbackRates?.gold22kBuyPerGram ?: 0.0) > 0.0 -> fallbackRates!!.gold22kBuyPerGram
-            r24 > 0.0 -> r24 * (22.0 / 24.0)
-            else -> 0.0
+            else -> fallbackRates?.gold22kBuyPerGram?.takeIf { it > 0.0 }
+                ?: if (r24 > 0.0) r24 * (22.0 / 24.0) else 0.0
         }
         val r18 = when {
             firestoreSummary.gold18kPerGram > 0.0 -> firestoreSummary.gold18kPerGram
-            (fallbackRates?.gold18kBuyPerGram ?: 0.0) > 0.0 -> fallbackRates!!.gold18kBuyPerGram
-            r24 > 0.0 -> r24 * (18.0 / 24.0)
-            else -> 0.0
+            else -> fallbackRates?.gold18kBuyPerGram?.takeIf { it > 0.0 }
+                ?: if (r24 > 0.0) r24 * (18.0 / 24.0) else 0.0
         }
 
         val goldValInr = (w.gold24kGrams * r24) + (w.gold22kGrams * r22) + (w.gold18kGrams * r18)
@@ -163,7 +160,7 @@ fun PortfolioSummaryCard(
     val context = LocalContext.current
     val appContext = context.applicationContext
     val scope = rememberCoroutineScope()
-    val currentUid = FirebaseAuth.getInstance().currentUser?.uid
+    val currentUid = remember(appContext) { FirestoreService.currentUserOrNull(appContext)?.uid }
     val repository = remember(currentUid) {
         if (currentUid != null) SonaWaneRepository(appContext) else null
     }

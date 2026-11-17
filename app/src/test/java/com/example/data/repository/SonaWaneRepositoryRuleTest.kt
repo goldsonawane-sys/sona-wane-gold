@@ -577,6 +577,106 @@ class SonaWaneRepositoryRuleTest : FirestoreEmulatorTestBase() {
         }
     }
 
+    @Test
+    fun recentBullionTrades_retrieveGoldSilverTradesWithStatusesAndEnforceUserScope() = runBlocking {
+        val uidA = signInTestUser("tradesA_${UUID.randomUUID().toString().take(6)}@test.com")
+        val repoA = SonaWaneRepository(firestore, auth)
+
+        withTimeout(TIMEOUT_MS) {
+            repoA.ensureUserProvisioned(uidA, "tradesA@test.com", "Gold Trader A", "dev_trades_a")
+            repoA.depositMoney(amountInr = 25000.0, paymentMethod = "UPI", mode = "TEST", simulateFailure = false)
+            // Failed deposit does not show in bullion trades
+            repoA.depositMoney(amountInr = 1000.0, paymentMethod = "UPI", mode = "TEST", simulateFailure = true)
+            // Buy Gold (Completed) + Buy Silver (Completed) + Seeded Pending & Failed bullion trades
+            repoA.buyMetal(
+                isGold = true,
+                purity = "24K",
+                grams = 1.0,
+                ratePerGram = 8000.0,
+                baseAmount = 8000.0,
+                gstAmount = 240.0,
+                chargesAmount = 0.0,
+                totalAmount = 8240.0,
+                paymentMethod = "WALLET",
+                mode = "TEST",
+            )
+            repoA.buyMetal(
+                isGold = false,
+                purity = "999",
+                grams = 10.0,
+                ratePerGram = 95.0,
+                baseAmount = 950.0,
+                gstAmount = 28.5,
+                chargesAmount = 0.0,
+                totalAmount = 978.5,
+                paymentMethod = "WALLET",
+                mode = "TEST",
+            )
+
+            val pendingTx = com.example.data.model.TransactionRecord(
+                userId = uidA,
+                txCode = "SWG-PEND-${UUID.randomUUID().toString().take(6)}",
+                category = "GOLD_SELL",
+                metalPurity = "24K",
+                grams = 0.25,
+                ratePerGram = 7950.0,
+                baseAmount = 1987.5,
+                totalAmount = 1987.5,
+                paymentMethod = "WALLET",
+                gatewayOrderId = "ord_p_${UUID.randomUUID().toString().take(8)}",
+                gatewayRef = "ref_p_${UUID.randomUUID().toString().take(8)}",
+                idempotencyKey = "idem_p_${UUID.randomUUID().toString().take(8)}",
+                status = "PENDING",
+                mode = "TEST",
+            )
+            firestore.collection("transactions").document("tx_p_${UUID.randomUUID().toString().take(8)}")
+                .set(pendingTx.toCreateMap()).await()
+
+            val failedTx = com.example.data.model.TransactionRecord(
+                userId = uidA,
+                txCode = "SWG-FAIL-${UUID.randomUUID().toString().take(6)}",
+                category = "SILVER_BUY",
+                metalPurity = "999",
+                grams = 5.0,
+                ratePerGram = 96.0,
+                baseAmount = 480.0,
+                gstAmount = 14.4,
+                totalAmount = 494.4,
+                paymentMethod = "UPI",
+                gatewayOrderId = "ord_f_${UUID.randomUUID().toString().take(8)}",
+                gatewayRef = "ref_f_${UUID.randomUUID().toString().take(8)}",
+                idempotencyKey = "idem_f_${UUID.randomUUID().toString().take(8)}",
+                status = "FAILED",
+                rejectionReason = "Simulated failure",
+                mode = "TEST",
+            )
+            firestore.collection("transactions").document("tx_f_${UUID.randomUUID().toString().take(8)}")
+                .set(failedTx.toCreateMap()).await()
+
+            val observed = repoA.observeRecentBullionTrades(uidA).first { list ->
+                list.any { it.status == "SUCCESSFUL" } &&
+                    list.any { it.status == "PENDING" } &&
+                    list.any { it.status == "FAILED" }
+            }
+            assertTrue(observed.all { it.category in SonaWaneRepository.BULLION_TRADE_CATEGORIES })
+            assertTrue(observed.any { it.category == "GOLD_BUY" && it.status == "SUCCESSFUL" })
+            assertTrue(observed.any { it.category == "GOLD_SELL" && it.status == "PENDING" })
+            assertTrue(observed.any { it.category == "SILVER_BUY" && it.status == "FAILED" })
+
+            val fetchedOnce = repoA.fetchRecentBullionTrades(uidA)
+            assertEquals(observed.size, fetchedOnce.size)
+        }
+
+        // Cross-user read must be denied by security rules
+        signInTestUser("tradesB_${UUID.randomUUID().toString().take(6)}@test.com")
+        val repoB = SonaWaneRepository(firestore, auth)
+        val crossRead = runCatching {
+            withTimeout(FLOW_TIMEOUT_MS) { repoB.fetchRecentBullionTrades(uidA) }
+        }
+        assertTrue(crossRead.isFailure)
+        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, crossRead.exceptionOrNull()?.unwrapFirestoreException()?.code)
+    }
+
     private companion object {
         const val TIMEOUT_MS = 15000L
         const val FLOW_TIMEOUT_MS = 12000L

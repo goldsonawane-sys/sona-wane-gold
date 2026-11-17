@@ -23,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.AddAlert
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Fingerprint
@@ -75,6 +76,8 @@ import com.example.ui.components.EnvironmentModeBadge
 import com.example.ui.components.GoldOutlinedButton
 import com.example.ui.components.GoldPriceHistoryChart
 import com.example.ui.components.GoldPrimaryButton
+import com.example.ui.components.GoldTradeSide
+import com.example.ui.components.GoldTradingPanel
 import com.example.ui.components.KeyValueRow
 import com.example.ui.components.LuxuryCard
 import com.example.ui.components.MarketTrendsDashboard
@@ -238,47 +241,59 @@ fun BullionTradeScreen(
             }
         }
 
-        // Buy / Sell Tabs
-        item {
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = ObsidianCard,
-                contentColor = RoyalGold,
-            ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text(if (isGold) "Buy Gold" else "Buy Silver", fontWeight = FontWeight.Bold) },
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text(if (isGold) "Sell Gold" else "Sell Silver", fontWeight = FontWeight.Bold) },
-                )
-            }
-        }
-
-        // Purity Selector (Gold only)
         if (isGold) {
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("24K", "22K", "18K").forEach { p ->
-                        FilterChip(
-                            selected = purity == p,
-                            onClick = { purity = p },
-                            label = { Text("$p Gold") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = RoyalGold,
-                                selectedLabelColor = DeepBlack,
-                            ),
-                        )
-                    }
+                GoldTradingPanel(
+                    wallet = wallet,
+                    rates = rates,
+                    gstPercent = appConfig.gstPercent,
+                    paymentMode = appConfig.paymentMode,
+                    isBusy = isBusy,
+                    maintenanceMode = appConfig.maintenanceMode,
+                    initialSide = if (initialSellTab) GoldTradeSide.SELL else GoldTradeSide.BUY,
+                    bankAccounts = bankAccounts,
+                    biometricRequired = profile?.biometricEnabled == true && requireBiometricForTrades,
+                    hasMpin = !profile?.mpinHash.isNullOrBlank(),
+                    onAuthenticateBiometric = if (onVerifyBiometric != null) {
+                        { _, _, ok, err ->
+                            onVerifyBiometric(
+                                {
+                                    onBiometricTradeAuthorized("GOLD_TRADE_BIOMETRIC")
+                                    ok()
+                                },
+                                err,
+                            )
+                        }
+                    } else null,
+                    onVerifyMpin = onVerifyMpin,
+                    onSetupMpin = onSetupMpin,
+                    onBuyGold = onBuy,
+                    onSellGold = onSell,
+                )
+            }
+        } else {
+            // Buy / Sell Tabs (Silver)
+            item {
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = ObsidianCard,
+                    contentColor = RoyalGold,
+                ) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = { Text("Buy Silver", fontWeight = FontWeight.Bold) },
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = { Text("Sell Silver", fontWeight = FontWeight.Bold) },
+                    )
                 }
             }
-        }
 
-        // Order Builder Card
-        item {
+            // Order Builder Card (Silver)
+            item {
             LuxuryCard(highlightGold = isGold) {
                 val activeRate = if (selectedTab == 0) buyRatePerGram else sellRatePerGram
                 Row(
@@ -446,6 +461,7 @@ fun BullionTradeScreen(
                 }
             }
         }
+        } // end if (!isGold)
 
         // Metal-specific recent transactions
         item {
@@ -513,25 +529,27 @@ fun BullionTradeScreen(
                             style = MaterialTheme.typography.labelMedium,
                             color = LightGold,
                         )
-                        GoldPrimaryButton(
-                            text = "Confirm Trade with Fingerprint / Face",
-                            icon = Icons.Default.Fingerprint,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("buy_biometric_confirm_btn"),
-                            onClick = {
-                                buyAuthError = null
-                                onVerifyBiometric!!.invoke(
-                                    {
-                                        showConfirmOrder = false
-                                        buyMpinInput = ""
-                                        onBiometricTradeAuthorized("BUY_${if (isGold) "GOLD" else "SILVER"}_${purity}_BIOMETRIC")
-                                        onBuy(purity, buyGrams, buyRatePerGram, buyBaseAmount, buyGstAmount, 0.0, buyTotalAmount, paymentMethod)
-                                    },
-                                    { err -> buyAuthError = err },
-                                )
-                            },
-                        )
+                        onVerifyBiometric?.let { verifyBio ->
+                            GoldPrimaryButton(
+                                text = "Confirm Trade with Fingerprint / Face",
+                                icon = Icons.Default.Fingerprint,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("buy_biometric_confirm_btn"),
+                                onClick = {
+                                    buyAuthError = null
+                                    verifyBio.invoke(
+                                        {
+                                            showConfirmOrder = false
+                                            buyMpinInput = ""
+                                            onBiometricTradeAuthorized("BUY_${if (isGold) "GOLD" else "SILVER"}_${purity}_BIOMETRIC")
+                                            onBuy(purity, buyGrams, buyRatePerGram, buyBaseAmount, buyGstAmount, 0.0, buyTotalAmount, paymentMethod)
+                                        },
+                                        { err -> buyAuthError = err },
+                                    )
+                                },
+                            )
+                        }
                         if (biometricEnforced && !profile?.mpinHash.isNullOrBlank()) {
                             OutlinedTextField(
                                 value = buyMpinInput,
@@ -545,8 +563,8 @@ fun BullionTradeScreen(
                             )
                         }
                     }
-                    if (!buyAuthError.isNullOrBlank()) {
-                        Text(buyAuthError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    buyAuthError?.takeIf { it.isNotBlank() }?.let { errMsg ->
+                        Text(errMsg, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
@@ -621,8 +639,8 @@ fun BullionTradeScreen(
                                 .testTag("sell_biometric_confirm_btn"),
                         )
                     }
-                    if (!mpinError.isNullOrBlank()) {
-                        Text(mpinError!!, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+                    mpinError?.takeIf { it.isNotBlank() }?.let { errMsg ->
+                        Text(errMsg, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
@@ -664,6 +682,7 @@ fun MarketScreen(
     onToggleAlert: (PriceAlert, Boolean) -> Unit,
     onDeleteAlert: (String) -> Unit,
     onOpenAlertsCenter: () -> Unit,
+    onOpenPriceTracking: () -> Unit = {},
 ) {
     var alertMetal by remember { mutableStateOf("GOLD_24K") }
     var alertTarget by remember { mutableStateOf("") }
@@ -679,6 +698,9 @@ fun MarketScreen(
                 subtitle = if (rates.isLive) "Verified Spot Feed" else "Delayed / Cached",
                 onBack = onBack,
                 actions = {
+                    IconButton(onClick = onOpenPriceTracking) {
+                        Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = "Open price tracker", tint = LightGold)
+                    }
                     IconButton(onClick = onOpenAlertsCenter) {
                         Icon(Icons.Default.AddAlert, contentDescription = "Manage all alerts", tint = AmberOrange)
                     }
@@ -726,6 +748,9 @@ fun MarketScreen(
                     isLoading = chartLoading,
                     errorMessage = marketHistoryError,
                     onSyncHistory = onSyncFirestoreHistory,
+                    externalTrendSeries = dualTrendSeries.takeIf { it.goldPoints.size >= 2 },
+                    autoFetchExternalApi = dualTrendSeries.goldPoints.size < 2,
+                    onRefreshExternalRates = onRefresh,
                 )
             }
 

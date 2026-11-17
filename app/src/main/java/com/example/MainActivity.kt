@@ -49,6 +49,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -67,8 +68,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.credentials.CredentialManager
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -79,12 +83,14 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.auth.attemptAutoSignIn
 import com.example.auth.authStateFlow
+import com.example.auth.onGoogleSignInClicked
 import com.example.auth.signOutUser
 import com.example.data.local.GoldDropInAppAlert
 import com.example.data.local.SecurityPreferences
 import com.example.data.model.TransactionRecord
 import com.example.data.remote.MarketRateService
 import com.example.data.repository.AdminRepository
+import com.example.data.repository.FirestoreService
 import com.example.data.repository.SonaWaneRepository
 import com.example.service.GoldPriceMonitorService
 import com.example.ui.components.GoldOutlinedButton
@@ -94,20 +100,24 @@ import com.example.ui.components.StatusPill
 import com.example.ui.screens.AdminControlPanelScreen
 import com.example.ui.screens.AdminKycReviewScreen
 import com.example.ui.screens.AdminLoginScreen
+import com.example.ui.screens.AlertsScreen
 import com.example.ui.screens.BankAccountsScreen
+import com.example.ui.screens.BiometricAppLockScreen
+import com.example.ui.screens.BiometricAuthenticationScreen
 import com.example.ui.screens.BullionTradeScreen
 import com.example.ui.screens.GoldPurchaseCalculatorScreen
 import com.example.ui.screens.HelpSupportScreen
 import com.example.ui.screens.HomeDashboardScreen
 import com.example.ui.screens.KycVerificationScreen
-import com.example.ui.screens.MarketAlertsScreen
 import com.example.ui.screens.MarketScreen
 import com.example.ui.screens.MpinLockScreen
 import com.example.ui.screens.MyQrScreen
 import com.example.ui.screens.NotificationsScreen
+import com.example.ui.screens.PriceTrackingScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.QrScannerScreen
 import com.example.ui.screens.ReferralsScreen
+import com.example.ui.screens.SensitiveActionScope
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.TransactionDetailDialog
@@ -116,6 +126,8 @@ import com.example.ui.screens.TransferScreen
 import com.example.ui.screens.WalletScreen
 import com.example.ui.screens.WelcomeAndAuthScreen
 import com.example.util.BiometricAuthManager
+import com.example.util.BiometricLoginManager
+import com.example.util.BullionQrModule
 import com.example.util.Formatters
 import com.example.ui.theme.AmberOrange
 import com.example.ui.theme.CharcoalBlack
@@ -148,11 +160,17 @@ class MainActivity : FragmentActivity() {
                 val scope = rememberCoroutineScope()
                 val credentialManager = remember { CredentialManager.create(context) }
                 val securityPrefs = remember { SecurityPreferences(appContext) }
+                val biometricLoginManager = remember(context, securityPrefs) {
+                    BiometricLoginManager(context, securityPrefs)
+                }
 
-                val currentUser by remember { Firebase.auth.authStateFlow() }
-                    .collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
+                val firebaseAuth = remember(appContext) { FirestoreService.getAuth(appContext) }
+                val currentUser by remember(firebaseAuth) { firebaseAuth.authStateFlow() }
+                    .collectAsStateWithLifecycle(initialValue = FirestoreService.currentUserOrNull(appContext))
                 val adminPortalMode by remember { securityPrefs.adminPortalModeFlow }
                     .collectAsStateWithLifecycle(initialValue = false)
+                val biometricVaultUid by remember { securityPrefs.biometricVaultUidFlow }
+                    .collectAsStateWithLifecycle(initialValue = null)
 
                 var showSplash by remember { mutableStateOf(true) }
 
@@ -168,6 +186,8 @@ class MainActivity : FragmentActivity() {
                     }
                 }
 
+                var biometricPromptInFlight by remember { mutableStateOf(false) }
+
                 if (showSplash) {
                     SplashScreen(onFinished = { showSplash = false })
                 } else if (adminPortalMode) {
@@ -175,12 +195,20 @@ class MainActivity : FragmentActivity() {
                         uid = currentUser?.uid,
                         email = currentUser?.email,
                         onLaunchBiometric = { title, subtitle, onSuccess, onError ->
+                            biometricPromptInFlight = true
                             BiometricAuthManager.promptBiometric(
                                 activity = this@MainActivity,
                                 title = title,
                                 subtitle = subtitle,
-                                onSuccess = onSuccess,
-                                onError = onError,
+                                onSuccess = {
+                                    biometricPromptInFlight = false
+                                    onSuccess()
+                                },
+                                onError = { err ->
+                                    biometricPromptInFlight = false
+                                    onError(err)
+                                },
+                                onCancel = { biometricPromptInFlight = false },
                             )
                         },
                         onSignOutAdmin = {
@@ -196,31 +224,100 @@ class MainActivity : FragmentActivity() {
                         onOpenAdminLogin = {
                             scope.launch { securityPrefs.setAdminPortalMode(true) }
                         },
+                        hasSavedBiometricVault = !biometricVaultUid.isNullOrBlank(),
+                        onBiometricQuickLogin = { onOk, onErr ->
+                            biometricPromptInFlight = true
+                            biometricLoginManager.authenticateForAppLogin(
+                                activity = this@MainActivity,
+                                title = "SONA-WANE GOLD Biometric Login",
+                                subtitle = "Authenticate with Fingerprint or Face ID to sign in quickly",
+                                allowDeviceCredentialFallback = true,
+                                onSuccess = {
+                                    biometricPromptInFlight = false
+                                    attemptAutoSignIn(
+                                        context = context,
+                                        credentialManager = credentialManager,
+                                        onAuthSuccess = { onOk() },
+                                        onUnauthenticated = {
+                                            onGoogleSignInClicked(
+                                                context = context,
+                                                credentialManager = credentialManager,
+                                                onAuthSuccess = { onOk() },
+                                                onAuthError = { msg -> onErr(msg) },
+                                                scope = scope,
+                                                onAuthCancelled = { onErr("Sign-in cancelled.") },
+                                            )
+                                        },
+                                        scope = scope,
+                                    )
+                                },
+                                onError = { err ->
+                                    biometricPromptInFlight = false
+                                    onErr(err)
+                                },
+                                onCancel = {
+                                    biometricPromptInFlight = false
+                                    onErr("Biometric authentication cancelled.")
+                                },
+                            )
+                        },
                     )
                 } else {
-                    val user = currentUser!!
-                    key(user.uid) {
-                        AuthenticatedAppShell(
-                            uid = user.uid,
-                            email = user.email,
-                            displayName = user.displayName,
-                            onLaunchBiometric = { title, subtitle, onSuccess, onError ->
-                                BiometricAuthManager.promptBiometric(
-                                    activity = this@MainActivity,
-                                    title = title,
-                                    subtitle = subtitle,
-                                    onSuccess = onSuccess,
-                                    onError = onError,
-                                )
-                            },
-                            onOpenIsolatedAdminPortal = {
-                                scope.launch { securityPrefs.setAdminPortalMode(true) }
-                            },
-                            onSignOut = {
-                                scope.launch { securityPrefs.setAdminPortalMode(false) }
-                                signOutUser(credentialManager = credentialManager, scope = scope)
-                            },
-                        )
+                    val user = currentUser
+                    if (user != null) {
+                        key(user.uid) {
+                            AuthenticatedAppShell(
+                                uid = user.uid,
+                                email = user.email,
+                                displayName = user.displayName,
+                                biometricLoginManager = biometricLoginManager,
+                                biometricPromptInFlight = biometricPromptInFlight,
+                                onLaunchBiometric = { title, subtitle, onSuccess, onError ->
+                                    biometricPromptInFlight = true
+                                    biometricLoginManager.authenticateForAppLogin(
+                                        activity = this@MainActivity,
+                                        title = title,
+                                        subtitle = subtitle,
+                                        allowDeviceCredentialFallback = false,
+                                        onSuccess = {
+                                            biometricPromptInFlight = false
+                                            onSuccess()
+                                        },
+                                        onError = { err ->
+                                            biometricPromptInFlight = false
+                                            onError(err)
+                                        },
+                                        onCancel = { biometricPromptInFlight = false },
+                                    )
+                                },
+                                onLaunchBiometricWithDeviceFallback = { title, subtitle, forceDeviceCred, onSuccess, onError ->
+                                    biometricPromptInFlight = true
+                                    biometricLoginManager.authenticateForAppLogin(
+                                        activity = this@MainActivity,
+                                        title = title,
+                                        subtitle = subtitle,
+                                        allowDeviceCredentialFallback = true,
+                                        forceDeviceCredential = forceDeviceCred,
+                                        onSuccess = {
+                                            biometricPromptInFlight = false
+                                            onSuccess()
+                                        },
+                                        onError = { err ->
+                                            biometricPromptInFlight = false
+                                            onError(err)
+                                        },
+                                        onCancel = { biometricPromptInFlight = false },
+                                    )
+                                },
+                                onOpenIsolatedAdminPortal = {
+                                    scope.launch { securityPrefs.setAdminPortalMode(true) }
+                                },
+                                onSignOut = {
+                                    scope.launch { securityPrefs.setAdminPortalMode(false) }
+                                    signOutUser(credentialManager = credentialManager, scope = scope)
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -254,25 +351,21 @@ private fun AdminPortalShell(
     )
 
     val adminUser by adminVm.adminUser.collectAsStateWithLifecycle()
+    val rbacState by adminVm.rbacState.collectAsStateWithLifecycle()
     val eligibilityChecked by adminVm.eligibilityChecked.collectAsStateWithLifecycle()
     val adminVerified by adminVm.adminVerified.collectAsStateWithLifecycle()
     val adminStatusMessage by adminVm.statusMessage.collectAsStateWithLifecycle()
     val authErrorMessage by adminVm.authErrorMessage.collectAsStateWithLifecycle()
     val adminBusy by adminVm.isBusy.collectAsStateWithLifecycle()
     val adminRateLimit by adminVm.adminRateLimit.collectAsStateWithLifecycle()
-    val allUsers by adminVm.allUsers.collectAsStateWithLifecycle()
-    val allTransactions by adminVm.allTransactions.collectAsStateWithLifecycle()
-    val allKyc by adminVm.allKyc.collectAsStateWithLifecycle()
-    val allTickets by adminVm.allTickets.collectAsStateWithLifecycle()
-    val allTransfers by adminVm.allTransfers.collectAsStateWithLifecycle()
-    val admins by adminVm.admins.collectAsStateWithLifecycle()
-    val auditLogs by adminVm.auditLogs.collectAsStateWithLifecycle()
-    val appConfig by adminVm.appConfig.collectAsStateWithLifecycle()
 
     var showKycReviewScreen by remember { mutableStateOf(false) }
 
-    LaunchedEffect(uid, adminVerified) {
+    LaunchedEffect(uid) {
         adminVm.checkEligibility()
+    }
+
+    LaunchedEffect(adminVerified) {
         if (!adminVerified) showKycReviewScreen = false
     }
 
@@ -289,10 +382,12 @@ private fun AdminPortalShell(
             currentEmail = email,
             eligibilityChecked = eligibilityChecked,
             adminUser = adminUser,
+            rbacState = rbacState,
             isBusy = adminBusy,
             authErrorMessage = authErrorMessage,
             adminRateLimit = adminRateLimit,
             onGoogleVerified = { adminVm.checkEligibility() },
+            onRetryRbacCheck = { adminVm.checkEligibility() },
             onEnrollCredentials = { opId, pass, confirm, bio ->
                 adminVm.enrollAdminCredentials(opId, pass, confirm, bio)
             },
@@ -318,61 +413,72 @@ private fun AdminPortalShell(
                 onExitToCustomerMode()
             },
         )
-    } else if (showKycReviewScreen && adminUser?.hasPermission("KYC") == true) {
-        AdminKycReviewScreen(
-            adminUser = adminUser,
-            allKyc = allKyc,
-            statusMessage = adminStatusMessage,
-            isBusy = adminBusy,
-            onClearStatus = { adminVm.clearStatus() },
-            onReviewKyc = { k, st, reason -> adminVm.reviewKyc(k, st, reason) },
-            onBack = { showKycReviewScreen = false },
-        )
     } else {
-        AdminControlPanelScreen(
-            adminUser = adminUser,
-            adminVerified = adminVerified,
-            statusMessage = adminStatusMessage,
-            isBusy = adminBusy,
-            allUsers = allUsers,
-            allTransactions = allTransactions,
-            allKyc = allKyc,
-            allTickets = allTickets,
-            allTransfers = allTransfers,
-            admins = admins,
-            auditLogs = auditLogs,
-            appConfig = appConfig,
-            onLockAdmin = { adminVm.lockAdminPortal() },
-            onSignOutAdmin = {
-                adminVm.lockAdminPortal()
-                onSignOutAdmin()
-            },
-            onClearStatus = { adminVm.clearStatus() },
-            onUpdateUserStatus = { u, st, reason -> adminVm.updateUserStatus(u, st, reason) },
-            onReviewKyc = { k, st, reason -> adminVm.reviewKyc(k, st, reason) },
-            onProcessWithdrawal = { tx, approve, utr, reason -> adminVm.processWithdrawal(tx, approve, utr, reason) },
-            onReplyTicket = { t, txt, st -> adminVm.replyTicket(t, txt, st) },
-            onPublishAnnouncement = { t, m, p -> adminVm.publishAnnouncement(t, m, p) },
-            onUpdateAppConfig = { cfg, reason -> adminVm.updateAppConfig(cfg, reason) },
-            onUpsertAdminRole = { targetUid, em, name, role, perms, opId, initPass, active ->
-                adminVm.upsertAdminRole(targetUid, em, name, role, perms, opId, initPass, active)
-            },
-            onResetAdminCredentials = { target, opId, pass ->
-                adminVm.resetAdminCredentials(target, opId, pass)
-            },
-            onDeleteAdminRole = { target -> adminVm.deleteAdminRole(target) },
-            onRotateOwnCredentials = { opId, cur, next, bio ->
-                adminVm.rotateOwnAdminCredentials(opId, cur, next, bio)
-            },
-            onUpdateOwnBiometric = { enabled -> adminVm.updateOwnBiometricSetting(enabled) },
-            onBuildCsv = { cat -> adminVm.buildTransactionsCsv(cat) },
-            onBuildAuditCsv = { filteredLogs -> adminVm.buildAuditLogsCsv(filteredLogs) },
-            onOpenKycReviewScreen = { showKycReviewScreen = true },
-            onBackToCustomerApp = {
-                adminVm.lockAdminPortal()
-                onExitToCustomerMode()
-            },
-        )
+        val allUsers by adminVm.allUsers.collectAsStateWithLifecycle()
+        val allTransactions by adminVm.allTransactions.collectAsStateWithLifecycle()
+        val allKyc by adminVm.allKyc.collectAsStateWithLifecycle()
+        val allTickets by adminVm.allTickets.collectAsStateWithLifecycle()
+        val allTransfers by adminVm.allTransfers.collectAsStateWithLifecycle()
+        val admins by adminVm.admins.collectAsStateWithLifecycle()
+        val auditLogs by adminVm.auditLogs.collectAsStateWithLifecycle()
+        val appConfig by adminVm.appConfig.collectAsStateWithLifecycle()
+
+        if (showKycReviewScreen && adminUser?.hasPermission("KYC") == true) {
+            AdminKycReviewScreen(
+                adminUser = adminUser,
+                allKyc = allKyc,
+                statusMessage = adminStatusMessage,
+                isBusy = adminBusy,
+                onClearStatus = { adminVm.clearStatus() },
+                onReviewKyc = { k, st, reason -> adminVm.reviewKyc(k, st, reason) },
+                onBack = { showKycReviewScreen = false },
+            )
+        } else {
+            AdminControlPanelScreen(
+                adminUser = adminUser,
+                adminVerified = adminVerified,
+                statusMessage = adminStatusMessage,
+                isBusy = adminBusy,
+                allUsers = allUsers,
+                allTransactions = allTransactions,
+                allKyc = allKyc,
+                allTickets = allTickets,
+                allTransfers = allTransfers,
+                admins = admins,
+                auditLogs = auditLogs,
+                appConfig = appConfig,
+                onLockAdmin = { adminVm.lockAdminPortal() },
+                onSignOutAdmin = {
+                    adminVm.lockAdminPortal()
+                    onSignOutAdmin()
+                },
+                onClearStatus = { adminVm.clearStatus() },
+                onUpdateUserStatus = { u, st, reason -> adminVm.updateUserStatus(u, st, reason) },
+                onReviewKyc = { k, st, reason -> adminVm.reviewKyc(k, st, reason) },
+                onProcessWithdrawal = { tx, approve, utr, reason -> adminVm.processWithdrawal(tx, approve, utr, reason) },
+                onReplyTicket = { t, txt, st -> adminVm.replyTicket(t, txt, st) },
+                onPublishAnnouncement = { t, m, p -> adminVm.publishAnnouncement(t, m, p) },
+                onUpdateAppConfig = { cfg, reason -> adminVm.updateAppConfig(cfg, reason) },
+                onUpsertAdminRole = { targetUid, em, name, role, perms, opId, initPass, active ->
+                    adminVm.upsertAdminRole(targetUid, em, name, role, perms, opId, initPass, active)
+                },
+                onResetAdminCredentials = { target, opId, pass ->
+                    adminVm.resetAdminCredentials(target, opId, pass)
+                },
+                onDeleteAdminRole = { target -> adminVm.deleteAdminRole(target) },
+                onRotateOwnCredentials = { opId, cur, next, bio ->
+                    adminVm.rotateOwnAdminCredentials(opId, cur, next, bio)
+                },
+                onUpdateOwnBiometric = { enabled -> adminVm.updateOwnBiometricSetting(enabled) },
+                onBuildCsv = { cat -> adminVm.buildTransactionsCsv(cat) },
+                onBuildAuditCsv = { filteredLogs -> adminVm.buildAuditLogsCsv(filteredLogs) },
+                onOpenKycReviewScreen = { showKycReviewScreen = true },
+                onBackToCustomerApp = {
+                    adminVm.lockAdminPortal()
+                    onExitToCustomerMode()
+                },
+            )
+        }
     }
 }
 
@@ -388,11 +494,15 @@ private fun AuthenticatedAppShell(
     uid: String,
     email: String?,
     displayName: String?,
+    biometricLoginManager: BiometricLoginManager,
+    biometricPromptInFlight: Boolean,
     onLaunchBiometric: (title: String, subtitle: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
+    onLaunchBiometricWithDeviceFallback: (title: String, subtitle: String, forceDeviceCred: Boolean, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
     onOpenIsolatedAdminPortal: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val context = LocalContext.current
+    val activity = context as? FragmentActivity
     val appContext = context.applicationContext
 
     val mainVm: MainViewModel = viewModel(
@@ -449,6 +559,7 @@ private fun AuthenticatedAppShell(
     val dualTrendSeries by mainVm.dualTrendSeries.collectAsStateWithLifecycle()
     val chartLoading by mainVm.chartLoading.collectAsStateWithLifecycle()
     val marketHistory30d by mainVm.marketHistory30d.collectAsStateWithLifecycle()
+    val firestorePriceHistory by mainVm.firestorePriceHistory.collectAsStateWithLifecycle()
     val marketHistoryLoading by mainVm.marketHistoryLoading.collectAsStateWithLifecycle()
     val marketHistoryError by mainVm.marketHistoryError.collectAsStateWithLifecycle()
     val firestoreGoldSummary by mainVm.firestoreGoldSummary.collectAsStateWithLifecycle()
@@ -463,12 +574,27 @@ private fun AuthenticatedAppShell(
     val otpState by mainVm.otpState.collectAsStateWithLifecycle()
     val mpinRateLimit by mainVm.mpinRateLimit.collectAsStateWithLifecycle()
     val bgDropMonitor by mainVm.bgDropMonitor.collectAsStateWithLifecycle()
+    val workerAlertConfig by mainVm.workerAlertConfig.collectAsStateWithLifecycle()
 
     val adminUser by adminEligibilityVm.adminUser.collectAsStateWithLifecycle()
 
     var showMpinSetupScreen by remember { mutableStateOf(false) }
+    var biometricLockError by remember { mutableStateOf<String?>(null) }
     var inspectedTx by remember { mutableStateOf<TransactionRecord?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner, biometricPromptInFlight) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> mainVm.recordAppBackgrounded()
+                Lifecycle.Event.ON_RESUME -> mainVm.checkBackgroundAutoLock(biometricPromptInFlight)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(actionBanner) {
         val banner = actionBanner
@@ -543,25 +669,31 @@ private fun AuthenticatedAppShell(
     }
 
     // MPIN / Biometric App Access Lock Gate (when configured and not yet unlocked)
-    if ((!profile?.mpinHash.isNullOrBlank() || biometricAppAccess) && !mpinUnlocked) {
+    if ((!profile?.mpinHash.isNullOrBlank() || biometricAppAccess || profile?.biometricEnabled == true) && !mpinUnlocked) {
         if (!profile?.mpinHash.isNullOrBlank()) {
             MpinLockScreen(
                 title = "Unlock SONA-WANE GOLD",
                 subtitle = "Enter your 4-digit MPIN or use Biometrics to access your vault.",
                 isSetupMode = false,
                 showBiometricButton = profile?.biometricEnabled == true || biometricAppAccess,
+                biometricErrorMessage = biometricLockError,
                 mpinRateLimit = mpinRateLimit,
                 otpState = otpState,
                 onBiometricClick = {
+                    biometricLockError = null
                     onLaunchBiometric(
                         "SONA-WANE GOLD Vault Unlock",
                         "Verify your Fingerprint or Face to unlock vault",
-                        { mainVm.unlockMpinSession(viaBiometric = true) },
-                        {},
+                        {
+                            biometricLockError = null
+                            mainVm.unlockMpinSession(viaBiometric = true)
+                        },
+                        { err -> biometricLockError = err },
                     )
                 },
                 onPinSubmitted = { pin, onErr ->
                     if (mainVm.verifyMpin(pin)) {
+                        biometricLockError = null
                         mainVm.unlockMpinSession(viaBiometric = false)
                     } else {
                         onErr("Incorrect MPIN. Try again.")
@@ -574,51 +706,39 @@ private fun AuthenticatedAppShell(
                 onForgotMpin = { showMpinSetupScreen = true },
             )
         } else {
-            LaunchedEffect(Unit) {
-                onLaunchBiometric(
-                    "SONA-WANE GOLD App Access",
-                    "Verify your Fingerprint or Face ID to open your bullion vault",
-                    { mainVm.unlockMpinSession(viaBiometric = true) },
-                    {},
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(DeepBlack)
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                LuxuryCard(highlightGold = true) {
-                    Text("Biometric App Access", style = MaterialTheme.typography.headlineMedium, color = LightGold)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Biometric authentication is enabled in Settings. Verify with Fingerprint or Face ID to enter SONA-WANE GOLD.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = PureWhite,
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    GoldOutlinedButton(
-                        text = "Unlock with Fingerprint / Face",
-                        modifier = Modifier.fillMaxWidth().testTag("biometric_app_unlock_btn"),
-                        onClick = {
-                            onLaunchBiometric(
-                                "SONA-WANE GOLD App Access",
-                                "Verify your Fingerprint or Face ID to enter",
-                                { mainVm.unlockMpinSession(viaBiometric = true) },
-                                {},
-                            )
+            BiometricAppLockScreen(
+                userDisplayName = profile?.fullName ?: displayName.orEmpty(),
+                userEmail = profile?.email ?: email.orEmpty(),
+                errorMessage = biometricLockError,
+                onUnlockWithBiometric = {
+                    biometricLockError = null
+                    onLaunchBiometricWithDeviceFallback(
+                        "SONA-WANE GOLD App Access",
+                        "Verify your Fingerprint or Face ID to enter",
+                        false,
+                        {
+                            biometricLockError = null
+                            mainVm.unlockMpinSession(viaBiometric = true)
                         },
+                        { err -> biometricLockError = err },
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    TextButton(
-                        onClick = { showMpinSetupScreen = true },
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                    ) {
-                        Text("Set Up 4-Digit MPIN Backup", color = SecondarySilver)
-                    }
-                }
-            }
+                },
+                onUnlockWithDeviceCredential = {
+                    biometricLockError = null
+                    onLaunchBiometricWithDeviceFallback(
+                        "SONA-WANE GOLD App Access",
+                        "Use Device PIN, Pattern, or Biometric to unlock",
+                        true,
+                        {
+                            biometricLockError = null
+                            mainVm.unlockMpinSession(viaBiometric = true)
+                        },
+                        { err -> biometricLockError = err },
+                    )
+                },
+                onSetupMpinBackup = { showMpinSetupScreen = true },
+                onSignOut = onSignOut,
+            )
         }
         return
     }
@@ -747,7 +867,8 @@ private fun AuthenticatedAppShell(
                     onOpenQr = { navController.navigate("my_qr") },
                     onOpenHistory = { navController.navigate("history") },
                     onOpenMarket = { navController.navigate("market") },
-                    onOpenAlerts = { navController.navigate("market_alerts") },
+                    onOpenPriceTracking = { navController.navigate("price_tracking") },
+                    onOpenAlerts = { navController.navigate("alerts") },
                     onOpenCalculator = { navController.navigate("gold_calculator") },
                     onOpenSettings = { navController.navigate("settings") },
                     onOpenNotifications = { navController.navigate("notifications") },
@@ -782,7 +903,17 @@ private fun AuthenticatedAppShell(
                     },
                     onVerifyMpin = { mainVm.verifyMpin(it) },
                     onVerifyBiometric = { ok, err ->
-                        onLaunchBiometric("Authorize Gold Trade", "Confirm Fingerprint or Face to execute gold order", ok, err)
+                        if (activity != null) {
+                            biometricLoginManager.authenticateForTrading(
+                                activity = activity,
+                                title = "Authorize Gold Trade",
+                                subtitle = "Confirm Fingerprint or Face to execute gold order",
+                                onSuccess = ok,
+                                onError = err,
+                            )
+                        } else {
+                            onLaunchBiometric("Authorize Gold Trade", "Confirm Fingerprint or Face to execute gold order", ok, err)
+                        }
                     },
                     onSetupMpin = { showMpinSetupScreen = true },
                     onViewReceipt = { inspectedTx = it },
@@ -814,7 +945,17 @@ private fun AuthenticatedAppShell(
                     },
                     onVerifyMpin = { mainVm.verifyMpin(it) },
                     onVerifyBiometric = { ok, err ->
-                        onLaunchBiometric("Authorize Silver Trade", "Confirm Fingerprint or Face to execute silver order", ok, err)
+                        if (activity != null) {
+                            biometricLoginManager.authenticateForTrading(
+                                activity = activity,
+                                title = "Authorize Silver Trade",
+                                subtitle = "Confirm Fingerprint or Face to execute silver order",
+                                onSuccess = ok,
+                                onError = err,
+                            )
+                        } else {
+                            onLaunchBiometric("Authorize Silver Trade", "Confirm Fingerprint or Face to execute silver order", ok, err)
+                        }
                     },
                     onSetupMpin = { showMpinSetupScreen = true },
                     onViewReceipt = { inspectedTx = it },
@@ -838,19 +979,52 @@ private fun AuthenticatedAppShell(
                     initialDialog = dlg,
                     walletUnlocked = walletUnlocked,
                     walletBiometricLock = walletBiometricLock,
+                    biometricAppAccess = biometricAppAccess,
                     onUnlockWalletWithBiometric = { ok, err ->
-                        onLaunchBiometric(
+                        if (activity != null) {
+                            biometricLoginManager.authenticateForWalletAccess(
+                                activity = activity,
+                                title = "Unlock SONA-WANE Wallet",
+                                subtitle = "Confirm Fingerprint or Face to access your bullion & INR wallet",
+                                onSuccess = {
+                                    mainVm.unlockWalletSession(viaBiometric = true)
+                                    ok()
+                                },
+                                onError = err,
+                            )
+                        } else {
+                            onLaunchBiometric(
+                                "Unlock SONA-WANE Wallet",
+                                "Confirm Fingerprint or Face to access your bullion & INR wallet",
+                                {
+                                    mainVm.unlockWalletSession(viaBiometric = true)
+                                    ok()
+                                },
+                                err,
+                            )
+                        }
+                    },
+                    onUnlockWalletWithDeviceCredential = { ok, err ->
+                        onLaunchBiometricWithDeviceFallback(
                             "Unlock SONA-WANE Wallet",
-                            "Confirm Fingerprint or Face to access your bullion & INR wallet",
+                            "Use Device PIN, Pattern, or Biometric to unlock your investment wallet",
+                            true,
                             {
+                                biometricLoginManager.markWalletAuthorized()
                                 mainVm.unlockWalletSession(viaBiometric = true)
                                 ok()
                             },
                             err,
                         )
                     },
-                    onUnlockWalletWithMpin = { mainVm.unlockWalletSession(viaBiometric = false) },
-                    onLockWallet = { mainVm.lockWalletSession() },
+                    onUnlockWalletWithMpin = {
+                        biometricLoginManager.markWalletAuthorized()
+                        mainVm.unlockWalletSession(viaBiometric = false)
+                    },
+                    onLockWallet = {
+                        biometricLoginManager.lockWalletSession()
+                        mainVm.lockWalletSession()
+                    },
                     onToggleWalletBiometricLock = { enabled -> mainVm.setWalletBiometricLock(enabled) },
                     onEnableAccountBiometrics = {
                         onLaunchBiometric(
@@ -864,11 +1038,22 @@ private fun AuthenticatedAppShell(
                     onWithdraw = { amount, bank -> mainVm.requestWithdrawal(amount, bank) },
                     onVerifyMpin = { mainVm.verifyMpin(it) },
                     onVerifyBiometric = { ok, err ->
-                        onLaunchBiometric("Authorize Bank Withdrawal", "Confirm Fingerprint or Face to initiate payout", ok, err)
+                        if (activity != null) {
+                            biometricLoginManager.authenticateForWalletAccess(
+                                activity = activity,
+                                title = "Authorize Bank Withdrawal",
+                                subtitle = "Confirm Fingerprint or Face to initiate payout",
+                                onSuccess = ok,
+                                onError = err,
+                            )
+                        } else {
+                            onLaunchBiometric("Authorize Bank Withdrawal", "Confirm Fingerprint or Face to initiate payout", ok, err)
+                        }
                     },
                     onSetupMpin = { showMpinSetupScreen = true },
                     onOpenBankAccounts = { navController.navigate("bank_accounts") },
                     onOpenTransfer = { navController.navigate("transfer?q=") },
+                    onOpenReceiveQr = { navController.navigate("my_qr") },
                     onOpenFullHistory = { navController.navigate("history") },
                     onViewReceipt = { inspectedTx = it },
                 )
@@ -912,7 +1097,7 @@ private fun AuthenticatedAppShell(
                     onOpenBankAccounts = { navController.navigate("bank_accounts") },
                     onOpenReferrals = { navController.navigate("referrals") },
                     onOpenMyQr = { navController.navigate("my_qr") },
-                    onOpenMarketAlerts = { navController.navigate("market_alerts") },
+                    onOpenMarketAlerts = { navController.navigate("alerts") },
                     onOpenNotifications = { navController.navigate("notifications") },
                     onOpenSupport = { navController.navigate("support") },
                     onRequestAccountDeletion = {
@@ -925,6 +1110,7 @@ private fun AuthenticatedAppShell(
                     },
                     onOpenKycFlow = { navController.navigate("kyc_verification") },
                     onOpenSettings = { navController.navigate("settings") },
+                    onOpenBiometricAuth = { navController.navigate("biometric_auth?scope=WALLET_VAULT") },
                     onOpenAdminPortal = onOpenIsolatedAdminPortal,
                     onSignOut = onSignOut,
                 )
@@ -949,21 +1135,30 @@ private fun AuthenticatedAppShell(
                     },
                     onToggleAlert = { alert, active -> mainVm.togglePriceAlert(alert, active) },
                     onDeleteAlert = { mainVm.deletePriceAlert(it) },
-                    onOpenAlertsCenter = { navController.navigate("market_alerts") },
+                    onOpenAlertsCenter = { navController.navigate("alerts") },
+                    onOpenPriceTracking = { navController.navigate("price_tracking") },
                 )
             }
 
-            composable("market_alerts") {
-                MarketAlertsScreen(
+            composable("alerts") {
+                AlertsScreen(
                     profile = profile,
                     rates = marketRates,
+                    firestoreGoldSummary = firestoreGoldSummary,
                     alerts = priceAlerts,
                     bgDropMonitor = bgDropMonitor,
+                    workerConfig = workerAlertConfig,
                     onBack = { navController.popBackStack() },
                     onRefreshRates = { mainVm.refreshMarketRates() },
                     onCheckAlertsNow = { mainVm.checkAlertsNow() },
-                    onConfigureBgDropMonitor = { enabled, threshold ->
-                        mainVm.configureBackgroundDropMonitor(enabled, threshold)
+                    onUpdateWorkerConfig = { interval, preferFs, masterEnabled ->
+                        mainVm.updateWorkerAlertConfig(interval, preferFs, masterEnabled)
+                    },
+                    onUpdateSoundVibration = { sound, vib ->
+                        mainVm.updatePreferences(sound = sound, vibration = vib)
+                    },
+                    onConfigureBgDropMonitor = { enabled, threshold, purity ->
+                        mainVm.configureBackgroundDropMonitor(enabled, threshold, purity)
                     },
                     onRunBgDropCheckNow = { mainVm.runBackgroundDropCheckNow() },
                     onCreateAlert = { metal, target, dir, freq, notes ->
@@ -974,7 +1169,38 @@ private fun AuthenticatedAppShell(
                     },
                     onToggleAlert = { alert, active -> mainVm.togglePriceAlert(alert, active) },
                     onDeleteAlert = { mainVm.deletePriceAlert(it) },
-                    onEnablePriceAlertPrefs = { enabled -> mainVm.updatePreferences(priceAlerts = enabled) },
+                )
+            }
+
+            composable("market_alerts") {
+                AlertsScreen(
+                    profile = profile,
+                    rates = marketRates,
+                    firestoreGoldSummary = firestoreGoldSummary,
+                    alerts = priceAlerts,
+                    bgDropMonitor = bgDropMonitor,
+                    workerConfig = workerAlertConfig,
+                    onBack = { navController.popBackStack() },
+                    onRefreshRates = { mainVm.refreshMarketRates() },
+                    onCheckAlertsNow = { mainVm.checkAlertsNow() },
+                    onUpdateWorkerConfig = { interval, preferFs, masterEnabled ->
+                        mainVm.updateWorkerAlertConfig(interval, preferFs, masterEnabled)
+                    },
+                    onUpdateSoundVibration = { sound, vib ->
+                        mainVm.updatePreferences(sound = sound, vibration = vib)
+                    },
+                    onConfigureBgDropMonitor = { enabled, threshold, purity ->
+                        mainVm.configureBackgroundDropMonitor(enabled, threshold, purity)
+                    },
+                    onRunBgDropCheckNow = { mainVm.runBackgroundDropCheckNow() },
+                    onCreateAlert = { metal, target, dir, freq, notes ->
+                        mainVm.createPriceAlert(metal, target, dir, freq, notes)
+                    },
+                    onUpdateAlert = { id, target, dir, freq, active, notes ->
+                        mainVm.updatePriceAlert(id, target, dir, freq, active, notes)
+                    },
+                    onToggleAlert = { alert, active -> mainVm.togglePriceAlert(alert, active) },
+                    onDeleteAlert = { mainVm.deletePriceAlert(it) },
                 )
             }
 
@@ -1025,10 +1251,16 @@ private fun AuthenticatedAppShell(
             }
 
             composable(
-                route = "transfer?q={q}",
-                arguments = listOf(navArgument("q") { type = NavType.StringType; defaultValue = "" }),
+                route = "transfer?q={q}&asset={asset}&qty={qty}",
+                arguments = listOf(
+                    navArgument("q") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("asset") { type = NavType.StringType; defaultValue = "GOLD_24K" },
+                    navArgument("qty") { type = NavType.StringType; defaultValue = "0.5" },
+                ),
             ) { entry ->
                 val initialQ = entry.arguments?.getString("q").orEmpty()
+                val initialAsset = entry.arguments?.getString("asset").orEmpty().ifBlank { "GOLD_24K" }
+                val initialQty = entry.arguments?.getString("qty").orEmpty().ifBlank { "0.5" }
                 TransferScreen(
                     profile = profile,
                     wallet = wallet,
@@ -1037,6 +1269,8 @@ private fun AuthenticatedAppShell(
                     outgoingTransfers = outgoingTransfers,
                     incomingTransfers = incomingTransfers,
                     initialLookupQuery = initialQ,
+                    initialAssetType = initialAsset,
+                    initialQuantity = initialQty,
                     isBusy = isBusy,
                     onLookupRecipient = { mainVm.lookupRecipient(it) },
                     onClearRecipient = { mainVm.clearRecipient() },
@@ -1063,8 +1297,12 @@ private fun AuthenticatedAppShell(
                 QrScannerScreen(
                     onQrDetected = { raw ->
                         navController.popBackStack()
-                        mainVm.lookupRecipient(raw)
-                        navController.navigate("transfer?q=$raw") {
+                        val prefill = BullionQrModule.resolveTransferPrefill(raw)
+                        val targetId = prefill?.userId ?: BullionQrModule.resolveUserIdOrEmpty(raw)
+                        val assetArg = prefill?.requestedAsset?.ifBlank { "GOLD_24K" } ?: "GOLD_24K"
+                        val qtyArg = prefill?.requestedGrams?.takeIf { it > 0.0 }?.toString() ?: "0.5"
+                        mainVm.lookupRecipient(targetId)
+                        navController.navigate("transfer?q=$targetId&asset=$assetArg&qty=$qtyArg") {
                             launchSingleTop = true
                         }
                     },
@@ -1204,17 +1442,179 @@ private fun AuthenticatedAppShell(
                     },
                     onChangeMpin = { showMpinSetupScreen = true },
                     onLockVaultNow = { mainVm.lockSession() },
-                    onOpenPriceAlerts = { navController.navigate("market_alerts") },
+                    onOpenPriceAlerts = { navController.navigate("alerts") },
+                    onOpenBiometricAuth = { navController.navigate("biometric_auth?scope=WALLET_VAULT") },
                     onBack = { navController.popBackStack() },
+                )
+            }
+
+            composable(
+                route = "biometric_auth?scope={scope}",
+                arguments = listOf(navArgument("scope") { type = NavType.StringType; defaultValue = "WALLET_VAULT" }),
+            ) { entry ->
+                var selectedScope by remember(entry) {
+                    mutableStateOf(SensitiveActionScope.fromArg(entry.arguments?.getString("scope")))
+                }
+                var authError by remember { mutableStateOf<String?>(null) }
+                var authStatus by remember { mutableStateOf<String?>(null) }
+                var authInFlight by remember { mutableStateOf(false) }
+                val lastTradeAuthMs by biometricLoginManager.lastTradeAuthorizedAtMs.collectAsStateWithLifecycle()
+                val walletAuthFlag by biometricLoginManager.walletSessionAuthorized.collectAsStateWithLifecycle()
+                val tradeAuthValid = remember(lastTradeAuthMs) { biometricLoginManager.isTradeSessionValid() }
+
+                BiometricAuthenticationScreen(
+                    scope = selectedScope,
+                    actionSummary = when (selectedScope) {
+                        SensitiveActionScope.WALLET_VAULT -> "Digital Wallet & Bullion Balances"
+                        SensitiveActionScope.INVESTMENT_ORDER -> "Gold & Silver Investment Execution"
+                        SensitiveActionScope.PAYOUT_TRANSFER -> "Bank Withdrawals & P2P Bullion Transfers"
+                    },
+                    userDisplayName = profile?.fullName ?: displayName.orEmpty(),
+                    hasMpinFallback = !profile?.mpinHash.isNullOrBlank(),
+                    walletLockEnabled = walletBiometricLock,
+                    tradeConfirmEnabled = tradeBiometricConfirm,
+                    isWalletAuthorized = walletUnlocked || walletAuthFlag,
+                    isTradeAuthorized = tradeAuthValid,
+                    isAuthenticating = authInFlight,
+                    errorMessage = authError,
+                    statusMessage = authStatus,
+                    onSelectScope = {
+                        selectedScope = it
+                        authError = null
+                        authStatus = null
+                    },
+                    onAuthenticateBiometric = {
+                        authError = null
+                        authStatus = null
+                        authInFlight = true
+                        if (activity != null) {
+                            when (selectedScope) {
+                                SensitiveActionScope.WALLET_VAULT -> {
+                                    biometricLoginManager.authenticateForWalletAccess(
+                                        activity = activity,
+                                        title = selectedScope.promptTitle,
+                                        subtitle = selectedScope.promptSubtitle,
+                                        onSuccess = {
+                                            authInFlight = false
+                                            mainVm.unlockWalletSession(viaBiometric = true)
+                                            authStatus = "Wallet Vault authorized via Android BiometricPrompt."
+                                        },
+                                        onError = { err ->
+                                            authInFlight = false
+                                            authError = err
+                                        },
+                                        onCancel = { authInFlight = false },
+                                    )
+                                }
+                                SensitiveActionScope.INVESTMENT_ORDER,
+                                SensitiveActionScope.PAYOUT_TRANSFER -> {
+                                    biometricLoginManager.authenticateForTrading(
+                                        activity = activity,
+                                        title = selectedScope.promptTitle,
+                                        subtitle = selectedScope.promptSubtitle,
+                                        onSuccess = {
+                                            authInFlight = false
+                                            mainVm.recordTradeBiometricAuth(selectedScope.title)
+                                            authStatus = "${selectedScope.title} authorized via BiometricPrompt."
+                                        },
+                                        onError = { err ->
+                                            authInFlight = false
+                                            authError = err
+                                        },
+                                        onCancel = { authInFlight = false },
+                                    )
+                                }
+                            }
+                        } else {
+                            onLaunchBiometric(
+                                selectedScope.promptTitle,
+                                selectedScope.promptSubtitle,
+                                {
+                                    authInFlight = false
+                                    if (selectedScope == SensitiveActionScope.WALLET_VAULT) {
+                                        biometricLoginManager.markWalletAuthorized()
+                                        mainVm.unlockWalletSession(viaBiometric = true)
+                                    } else {
+                                        biometricLoginManager.markTradeAuthorized()
+                                        mainVm.recordTradeBiometricAuth(selectedScope.title)
+                                    }
+                                    authStatus = "${selectedScope.title} authorized."
+                                },
+                                { err ->
+                                    authInFlight = false
+                                    authError = err
+                                },
+                            )
+                        }
+                    },
+                    onAuthenticateDeviceCredential = {
+                        authError = null
+                        authStatus = null
+                        authInFlight = true
+                        onLaunchBiometricWithDeviceFallback(
+                            selectedScope.promptTitle,
+                            "Use Device PIN, Pattern, or Biometric to authorize ${selectedScope.chipLabel}",
+                            true,
+                            {
+                                authInFlight = false
+                                if (selectedScope == SensitiveActionScope.WALLET_VAULT) {
+                                    biometricLoginManager.markWalletAuthorized()
+                                    mainVm.unlockWalletSession(viaBiometric = true)
+                                } else {
+                                    biometricLoginManager.markTradeAuthorized()
+                                    mainVm.recordTradeBiometricAuth(selectedScope.title)
+                                }
+                                authStatus = "${selectedScope.title} authorized with device credential."
+                            },
+                            { err ->
+                                authInFlight = false
+                                authError = err
+                            },
+                        )
+                    },
+                    onVerifyMpin = { pin -> mainVm.verifyMpin(pin) },
+                    onMpinSuccess = {
+                        authError = null
+                        if (selectedScope == SensitiveActionScope.WALLET_VAULT) {
+                            biometricLoginManager.markWalletAuthorized()
+                            mainVm.unlockWalletSession(viaBiometric = false)
+                        } else {
+                            biometricLoginManager.markTradeAuthorized()
+                        }
+                        authStatus = "${selectedScope.title} authorized via 4-digit MPIN."
+                    },
+                    onLockSessions = {
+                        biometricLoginManager.lockWalletSession()
+                        mainVm.lockWalletSession()
+                        authStatus = "Protected sessions locked."
+                    },
+                    onToggleWalletLock = { enabled -> mainVm.setWalletBiometricLock(enabled) },
+                    onToggleTradeConfirm = { enabled -> mainVm.setTradeBiometricConfirm(enabled) },
+                    onSetupMpin = { showMpinSetupScreen = true },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+
+            composable("price_tracking") {
+                PriceTrackingScreen(
+                    historyEntries = firestorePriceHistory,
+                    rates = marketRates,
+                    isLoading = marketHistoryLoading,
+                    errorMessage = marketHistoryError,
+                    onBack = { navController.popBackStack() },
+                    onRefreshFromFirestore = { mainVm.syncFirestoreMarketHistory(force = true) },
+                    onTradeGold = { navController.navigate("gold?sell=false") },
+                    onTradeSilver = { navController.navigate("silver?sell=false") },
+                    onOpenAlerts = { navController.navigate("alerts") },
                 )
             }
         }
         }
     }
 
-    if (inspectedTx != null) {
+    inspectedTx?.let { selectedTransaction ->
         TransactionDetailDialog(
-            tx = inspectedTx!!,
+            tx = selectedTransaction,
             userName = profile?.fullName ?: "Customer",
             onDismiss = { inspectedTx = null },
             onContactSupport = {

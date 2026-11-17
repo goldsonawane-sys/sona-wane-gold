@@ -65,8 +65,8 @@ import com.example.ui.theme.PureWhite
 import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.SecondarySilver
 import com.example.ui.theme.SuccessGreen
+import com.example.data.repository.FirestoreService
 import com.example.util.Formatters
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
 import com.patrykandpatrick.vico.compose.cartesian.axis.rememberBottom
@@ -154,7 +154,7 @@ fun GoldPriceHistoryChart(
     val context = LocalContext.current
     val appContext = context.applicationContext
     val scope = rememberCoroutineScope()
-    val currentUid = FirebaseAuth.getInstance().currentUser?.uid
+    val currentUid = remember(appContext) { FirestoreService.currentUserOrNull(appContext)?.uid }
     val repository = remember(currentUid) {
         if (currentUid != null) SonaWaneRepository(appContext) else null
     }

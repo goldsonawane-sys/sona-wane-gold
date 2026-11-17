@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.BgDropMonitorState
 import com.example.data.local.GoldDropInAppAlert
+import com.example.data.local.PriceAlertWorkerConfig
 import com.example.data.local.SecurityPreferences
 import com.example.data.model.Announcement
 import com.example.data.model.AppConfig
@@ -30,6 +31,8 @@ import com.example.data.model.WalletLedgerEntry
 import com.example.data.remote.MarketRateService
 import com.example.data.repository.SonaWaneRepository
 import com.example.service.GoldPriceMonitorService
+import com.example.service.PriceAlertManager
+import com.example.util.BiometricAuthManager
 import com.example.util.BullionNotificationHelper
 import com.example.util.CryptoUtils
 import com.example.util.Formatters
@@ -79,6 +82,9 @@ class MainViewModel(
 
     private var activeOtpCode: String? = null
     private var previousRates: LiveMarketRates? = null
+    private var lastBackgroundedAtMs: Long = 0L
+    private val priceAlertManager: PriceAlertManager? =
+        appContext?.let { PriceAlertManager(it, prefs, marketService) }
 
     private val _isInitializing = MutableStateFlow(true)
     val isInitializing: StateFlow<Boolean> = _isInitializing.asStateFlow()
@@ -126,16 +132,19 @@ class MainViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), 0 to 0L)
 
     val walletBiometricLock: StateFlow<Boolean> = prefs.walletBiometricLockFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), true)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     val tradeBiometricConfirm: StateFlow<Boolean> = prefs.tradeBiometricConfirmFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), true)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     val biometricAppAccess: StateFlow<Boolean> = prefs.biometricAppAccessFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), false)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val bgDropMonitor: StateFlow<BgDropMonitorState> = prefs.bgDropMonitorFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), BgDropMonitorState())
+
+    val workerAlertConfig: StateFlow<PriceAlertWorkerConfig> = prefs.priceAlertWorkerConfigFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), PriceAlertWorkerConfig())
 
     private fun <T> observeSafe(flow: kotlinx.coroutines.flow.Flow<T>, initial: T): StateFlow<T> {
         return flow
@@ -169,6 +178,15 @@ class MainViewModel(
     val incomingTransfers: StateFlow<List<UserTransfer>> = observeSafe(repository.observeIncomingTransfers(currentUserId), emptyList())
     val appConfig: StateFlow<AppConfig> = observeSafe(repository.observeAppConfig(), AppConfig())
     val marketHistory30d: StateFlow<List<MarketPriceHistoryEntry>> = repository.observeMarketPriceHistory(30)
+        .catch { err ->
+            val fs = generateSequence(err) { it.cause }
+                .filterIsInstance<FirebaseFirestoreException>()
+                .firstOrNull()
+            if (fs == null && err is CancellationException) throw err
+            _marketHistoryError.value = (fs ?: err).localizedMessage ?: "Failed to load Firestore price history"
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    val firestorePriceHistory: StateFlow<List<MarketPriceHistoryEntry>> = repository.observeMarketPriceHistory(90)
         .catch { err ->
             val fs = generateSequence(err) { it.cause }
                 .filterIsInstance<FirebaseFirestoreException>()
@@ -212,6 +230,8 @@ class MainViewModel(
     init {
         viewModelScope.launch {
             try {
+                // Prime DataStore biometric lock flags before clearing initialization gate
+                prefs.biometricAppAccessFlow.first()
                 val devId = prefs.getOrCreateDeviceId()
                 _deviceId.value = devId
                 repository.ensureUserProvisioned(currentUserId, currentEmail, currentDisplayName, devId)
@@ -261,6 +281,19 @@ class MainViewModel(
                 }
             }
         }
+
+        // Sync user's Gold & Silver target price alerts with PriceAlertManager & WorkManager
+        viewModelScope.launch {
+            combine(priceAlerts, profile) { alerts, prof ->
+                if (prof?.notifPriceAlerts == false) {
+                    alerts.map { it.copy(isActive = false) }
+                } else {
+                    alerts
+                }
+            }.collectLatest { syncedAlerts ->
+                priceAlertManager?.syncFromFirestoreAlerts(syncedAlerts)
+            }
+        }
     }
 
     fun dismissBanner() {
@@ -286,6 +319,33 @@ class MainViewModel(
     fun lockSession() {
         _mpinUnlocked.value = false
         _walletUnlocked.value = false
+    }
+
+    fun recordAppBackgrounded(nowMs: Long = System.currentTimeMillis()) {
+        lastBackgroundedAtMs = nowMs
+        viewModelScope.launch {
+            prefs.updateLastActiveEpoch(nowMs)
+        }
+    }
+
+    fun checkBackgroundAutoLock(
+        biometricPromptInFlight: Boolean,
+        nowMs: Long = System.currentTimeMillis(),
+    ) {
+        val requiresLock = biometricAppAccess.value ||
+            profile.value?.biometricEnabled == true ||
+            !profile.value?.mpinHash.isNullOrBlank()
+        if (BiometricAuthManager.shouldAutoLockAfterBackground(
+                requiresAppLock = requiresLock,
+                isCurrentlyUnlocked = _mpinUnlocked.value,
+                lastBackgroundedAtMs = lastBackgroundedAtMs,
+                resumedAtMs = nowMs,
+                biometricPromptInFlight = biometricPromptInFlight,
+            )
+        ) {
+            lockSession()
+        }
+        lastBackgroundedAtMs = 0L
     }
 
     fun unlockWalletSession(viaBiometric: Boolean) {
@@ -322,6 +382,10 @@ class MainViewModel(
     }
 
     fun setBiometricAppAccess(enabled: Boolean) {
+        if (enabled) {
+            // User just passed BiometricPrompt to enable app access; keep current session unlocked
+            _mpinUnlocked.value = true
+        }
         viewModelScope.launch {
             prefs.setBiometricAppAccess(enabled)
             prefs.setBiometricVaultUid(if (enabled) currentUserId else null)
@@ -339,6 +403,9 @@ class MainViewModel(
     }
 
     fun setBiometricAuthenticationMaster(enabled: Boolean) {
+        if (enabled) {
+            _mpinUnlocked.value = true
+        }
         viewModelScope.launch {
             prefs.setBiometricAuthenticationSettings(appAccessEnabled = enabled, txConfirmEnabled = enabled)
             prefs.setWalletBiometricLock(enabled)
@@ -636,14 +703,50 @@ class MainViewModel(
 
     fun checkAlertsNow() {
         viewModelScope.launch {
-            val current = _marketRates.value
+            val cfg = workerAlertConfig.value
+            priceAlertManager?.runImmediateCheck(preferFirestoreRates = cfg.preferFirestoreRates)
+            var current = _marketRates.value
             if (current.gold24kBuyPerGram <= 0.0 && current.silver999BuyPerGram <= 0.0) {
-                refreshMarketRates()
-            } else {
+                current = runCatching { repository.fetchLatestMarketRatesOnce() }.getOrNull() ?: current
+                if (current.gold24kBuyPerGram <= 0.0 && current.silver999BuyPerGram <= 0.0) {
+                    refreshMarketRates()
+                    current = _marketRates.value
+                }
+            }
+            if (current.gold24kBuyPerGram > 0.0 || current.silver999BuyPerGram > 0.0) {
                 val triggered = evaluatePriceAlerts(current, previousRates)
                 _actionBanner.value = ActionBanner(
-                    if (triggered > 0) "$triggered price alert(s) triggered & pushed!" else "All active alerts checked against live spot rates."
+                    if (triggered > 0) "$triggered price alert(s) triggered & pushed!" else "All active alerts checked against Firestore & live rates."
                 )
+            }
+        }
+    }
+
+    fun updateWorkerAlertConfig(
+        intervalMinutes: Long,
+        preferFirestoreRates: Boolean,
+        masterAlertsEnabled: Boolean,
+    ) {
+        viewModelScope.launch {
+            val safeInterval = intervalMinutes.coerceAtLeast(15L)
+            prefs.setPriceAlertWorkerConfig(safeInterval, preferFirestoreRates, masterAlertsEnabled)
+            runCatching {
+                repository.updateSecurityAndNotifPrefs(
+                    uid = currentUserId,
+                    priceAlertsEnabled = masterAlertsEnabled,
+                )
+            }
+            val hasActive = priceAlerts.value.any { it.isActive }
+            if (masterAlertsEnabled && hasActive) {
+                priceAlertManager?.schedulePeriodicMonitoring(safeInterval, preferFirestoreRates)
+                _actionBanner.value = ActionBanner(
+                    "WorkManager armed (${safeInterval}m • ${if (preferFirestoreRates) "Firestore + Live" else "Live API"})."
+                )
+            } else if (!masterAlertsEnabled) {
+                priceAlertManager?.cancelMonitoring()
+                _actionBanner.value = ActionBanner("WorkManager price alert notifications paused.")
+            } else {
+                _actionBanner.value = ActionBanner("Worker preferences saved (${safeInterval}m interval).")
             }
         }
     }
@@ -1125,6 +1228,7 @@ class MainViewModel(
         viewModelScope.launch {
             repository.updateSecurityAndNotifPrefs(currentUserId, biometric, sound, vibration, priceAlerts, announcements)
             if (biometric != null) {
+                if (biometric) _mpinUnlocked.value = true
                 prefs.setBiometricAppAccess(biometric)
                 prefs.setBiometricVaultUid(if (biometric) currentUserId else null)
                 repository.recordLoginEvent(
@@ -1168,6 +1272,10 @@ class MainViewModel(
                 )
             }
                 .onSuccess {
+                    val cfg = workerAlertConfig.value
+                    if (cfg.masterAlertsEnabled) {
+                        priceAlertManager?.schedulePeriodicMonitoring(cfg.intervalMinutes, cfg.preferFirestoreRates)
+                    }
                     _actionBanner.value = ActionBanner("Price alert armed (${metal.replace("_", " ")} • $frequency).")
                 }
                 .onFailure {
